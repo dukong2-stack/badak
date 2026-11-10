@@ -13,7 +13,7 @@ const CATS = {
 const SHORT = { A: "소진", B: "과매도", C: "패턴", D: "수급", E: "가치", F: "내부자", G: "실적" };
 const STAGE = { 0: "해당 없음", 1: "① 과매도", 2: "② 바닥 형성", 3: "③ 전환 확인" };
 const TABS = ["3", "2", "1", "all", "rules"];
-const S = { tab: "3", D: null, items: [], byCode: {}, max: {}, catMax: {} };
+const S = { tab: "3", D: null, items: [], byCode: {}, max: {}, catMax: {}, div: null };
 
 /* ---------- 목록 ---------- */
 
@@ -52,6 +52,11 @@ function topChips(it, n = 3) {
     .join("");
 }
 
+function divChip(it) {
+  const d = S.div && S.div.map[it.code];
+  return d ? `<span class="dv">배당 후보 ${d.rank}위</span>` : "";
+}
+
 function card(it) {
   const chg = it.chg > 0 ? "up" : it.chg < 0 ? "down" : "";
   const pen = it.pen.length ? `<div class="pen">감점 ${fmt(it.pen.reduce((a, p) => a + p[1], 0))} ${it.pen.map((p) => esc(p[0])).join(", ")}</div>` : "";
@@ -62,7 +67,7 @@ function card(it) {
     <div class="facts">${st}<span>${fmt(it.close)}원 <span class="${chg}">${it.chg > 0 ? "+" : ""}${fmt(it.chg, 2)}%</span></span>
       <span>60일 저점 +${fmt(it.low60, 1)}%</span><span>시총 ${it.rank}위</span></div>
     ${sounding(it)}
-    <div class="chips">${topChips(it)}</div>${pen}
+    <div class="chips">${divChip(it)}${topChips(it)}</div>${pen}
   </button></li>`;
 }
 
@@ -137,6 +142,7 @@ function detailHtml(it) {
       <div class="links"><a href="https://finance.naver.com/item/main.naver?code=${it.code}" target="_blank" rel="noopener">네이버 증권</a>
       <a href="https://dart.fss.or.kr/dsab001/main.do?textCrpNm=${encodeURIComponent(it.name)}" target="_blank" rel="noopener">DART 공시</a></div></div>
     <div class="d-score"><div class="sc">${fmt(it.score, 1)}</div><small>100점 중${it.pen.length ? `, 감점 전 ${fmt(it.raw, 1)}` : ""}</small></div></div>
+    ${S.div && S.div.map[it.code] ? `<p class="stage-note"><b class="s2">배당가치 노트 후보 ${S.div.map[it.code].rank}위</b> (배당 점수 ${fmt(S.div.map[it.code].score, 1)}, 시가배당률 ${fmt(S.div.map[it.code].yld, 2)}%) <a href="../divnote/" target="_blank" rel="noopener">배당가치 노트 열기</a></p>` : ""}
     <div class="steps">${[1, 2, 3].map((s) => `<div class="k${s}${it.stage >= s ? " on" : ""}">${STAGE[s]}</div>`).join("")}</div>
     <p class="stage-note">${it.stage ? `<b>${sinceText(it, S.D.meta.asof)}.</b> ` : ""}${stageNote}</p>
     ${sounding(it, true)}
@@ -288,6 +294,46 @@ function setTab(t, dir = 0) {
   }, { passive: true });
 })();
 
+/* ---------- 배당가치 노트 후보와 겹치는 종목 ---------- */
+
+async function divnote() {
+  try {
+    const r = await fetch("../divnote/data/latest.json?t=" + Date.now(), { cache: "no-store" });
+    if (!r.ok) return;
+    const L = await r.json();
+    const map = {};
+    (L.candidates || []).forEach((c, i) => { map[c.code] = { rank: i + 1, score: c.score, yld: c.yield, name: c.name }; });
+    S.div = { map, total: (L.candidates || []).length, updated: L.updated };
+    showDiv();
+  } catch (e) { /* 배당가치 노트가 없으면 표시하지 않음 */ }
+}
+
+function showDiv() {
+  if (!S.div || !S.D) return;
+  const n = S.items.filter((i) => S.div.map[i.code]).length;
+  const b = $("#divbtn");
+  b.innerHTML = `배당 후보와 겹침 <b>${n}</b>`;
+  b.title = `배당가치 노트 후보 ${S.div.total}종목 중 이 앱에서 채점된 종목`;
+  b.hidden = false;
+  renderLists();
+}
+
+function openOverlap() {
+  const xs = S.items.filter((i) => S.div.map[i.code]).sort((a, b) => b.stage - a.stage || b.score - a.score);
+  const outside = Object.entries(S.div.map).filter(([c]) => !S.byCode[c]).sort((a, b) => a[1].rank - b[1].rank);
+  const exc = Object.fromEntries(S.D.meta.excluded.map((e) => [e.code, e.why]));
+  $("#detail").innerHTML = `<div class="ov-head"><h2>배당 후보와 겹치는 종목 ${xs.length}개</h2>
+    <p>배당가치 노트 후보 ${S.div.total}종목(${esc(S.div.updated)} 기준) 중 이 앱에서 채점된 종목입니다. 단계가 높은 순, 같은 단계는 바닥 점수순입니다.</p></div>
+    <ol class="list">${xs.length ? xs.map(card).join("") : `<li class="empty">겹치는 종목이 없습니다.</li>`}</ol>
+    ${outside.length ? `<p class="ov-sec">겹치지 않는 배당 후보 ${outside.length}개</p>
+      <p class="stage-note">${outside.map(([c, v]) => `${v.rank}위 ${esc(v.name)}${exc[c] ? ` <small>(${esc(exc[c])})</small>` : ""}`).join(", ")}</p>
+      <p class="stage-note">대부분 코스닥이거나 코스피 시총 ${S.D.meta.universe_cfg.top_n}위 밖이라 이 앱의 후보군에 들지 않은 종목입니다. 괄호 안은 이 앱에서 제외된 사유입니다.</p>` : ""}`;
+  $("#sheet").hidden = false;
+  document.body.style.overflow = "hidden";
+  history.pushState({ ov: 1 }, "", "#overlap");
+  $("#close").focus();
+}
+
 /* ---------- 시장 국면(증시 온도계와 같은 판정) ---------- */
 
 async function heatBadge() {
@@ -418,6 +464,11 @@ $("#main").addEventListener("click", (e) => {
 $("#q").addEventListener("input", renderAll);
 $("#sort").addEventListener("change", renderAll);
 $("#close").addEventListener("click", () => closeDetail());
+$("#divbtn").addEventListener("click", openOverlap);
+$("#detail").addEventListener("click", (e) => {
+  const c = e.target.closest(".card");
+  if (c) { history.replaceState(null, "", location.pathname); openDetail(c.dataset.code); }
+});
 $("#sheet").addEventListener("click", (e) => { if (e.target.id === "sheet") closeDetail(); });
 addEventListener("keydown", (e) => { if (e.key === "Escape") closeDetail(); });
 addEventListener("popstate", () => closeDetail(true));
@@ -425,5 +476,5 @@ addEventListener("popstate", () => closeDetail(true));
 let saved = null;
 try { saved = localStorage.getItem("badak.tab"); } catch (e) { /* 저장 불가 */ }
 setTab(TABS.includes(saved) ? saved : "3");
-load();
+load().then(divnote);
 heatBadge();

@@ -1,7 +1,7 @@
 {
   "_설명": "숫자만 고치고 저장하면 다음 수집부터 반영됩니다. 배점(weights)은 합계 100, 감점(penalties)은 음수입니다.",
   "universe": {
-    "top_n": 300,
+    "top_n": 400,
     "min_trading_value_eok": 50,
     "min_profit_years_of_3": 2,
     "min_interest_coverage": 1.0
