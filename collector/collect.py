@@ -502,9 +502,13 @@ KINDS = [
 ]
 
 
+SKIP = ("철회", "무상증자", "자회사", "종속회사", "예고", "취소", "자율공시", "일정금액미만", "경영권분쟁")
+
+
 def kind_of(nm):
+    """보고서명 → 종류. 정정·첨부 보고서, 자회사 공시, 예고·자율공시·경영권분쟁 소송은 제외"""
     n = nm.replace(" ", "")
-    if "철회" in n or "무상증자" in n:
+    if n.startswith("[") or any(x in n for x in SKIP):
         return None
     for k, keys in KINDS:
         if any(x.replace(" ", "") in n for x in keys):
@@ -544,6 +548,9 @@ def disclosures(today):
     return cache["rows"]
 
 
+INSTITUTION = re.compile(r"연금|공제회|자산운용|투자|증권|은행|보험|캐피탈|신탁|펀드|Fund|FUND|Capital|CAPITAL|Management|BlackRock|Vanguard|Norges|Government|GIC", re.I)
+
+
 def insider(corp, today):
     """임원·주요주주 특정증권 소유상황 보고(최근 120일): 증가=매수 신호, 주요주주 감소=감점"""
     j = dart("elestock.json", {"corp_code": corp})
@@ -557,6 +564,8 @@ def insider(corp, today):
         if not ch:
             continue
         who = (it.get("repror") or "").strip()
+        if INSTITUTION.search(who):
+            continue  # 국민연금·운용사 등 기관 매매는 내부자 신호가 아님
         main = (it.get("isu_main_shrholdr") or "").strip()
         if ch > 0:
             out.append({"k": "insider_buy", "d": d, "who": who, "nm": "임원·주요주주 보유 증가"})
@@ -650,8 +659,9 @@ def main():
 
     for no, row in disc.items():
         c = corp_map.get(row["s"])
-        if c:
-            events.setdefault(c, []).append({"k": row["k"], "d": row["d"], "nm": row["nm"]})
+        k = kind_of(row["nm"])  # 저장된 공시도 최신 분류 규칙으로 다시 거름
+        if c and k:
+            events.setdefault(c, []).append({"k": k, "d": row["d"], "nm": row["nm"]})
 
     # 5) 한국거래소
     st = krx()
