@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>바닥 신호</title>
+<meta name="theme-color" content="#1D5168">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <div class="brand">
+      <h1>바닥 신호</h1>
+      <a id="heat" class="heat" href="../heatmeter/" hidden></a>
+    </div>
+    <p id="sub" class="sub">불러오는 중…</p>
+    <nav class="tabs" role="tablist" aria-label="단계">
+      <button role="tab" data-tab="3"><b class="st s3">③</b>전환<span class="n" id="n3"></span></button>
+      <button role="tab" data-tab="2"><b class="st s2">②</b>바닥<span class="n" id="n2"></span></button>
+      <button role="tab" data-tab="1"><b class="st s1">①</b>과매도<span class="n" id="n1"></span></button>
+      <button role="tab" data-tab="all">전체</button>
+      <button role="tab" data-tab="rules">기준</button>
+    </nav>
+  </header>
+
+  <main id="main">
+    <section class="pane" data-pane="3"><p class="lead">바닥을 다진 뒤 패턴 돌파나 20일선 회복에 외국인·기관 순매수까지 붙은 종목입니다. 저점보다 비싸게 사는 대신 확인을 얻습니다.</p><div class="key-strip"></div><ol class="list" id="l3"></ol></section>
+    <section class="pane" data-pane="2"><p class="lead">과매도 뒤 매도가 마르거나 다이버전스가 나왔고, 10거래일 넘게 신저가가 없는 종목입니다.</p><div class="key-strip"></div><ol class="list" id="l2"></ol></section>
+    <section class="pane" data-pane="1"><p class="lead">RSI 30 이하이거나 60일선에서 10% 넘게 떨어진 종목입니다. 아직 내려가는 중일 수 있습니다.</p><div class="key-strip"></div><ol class="list" id="l1"></ol></section>
+    <section class="pane" data-pane="all">
+      <div class="tools">
+        <input id="q" type="search" placeholder="종목명·코드 검색" aria-label="종목 검색">
+        <select id="sort" aria-label="정렬">
+          <option value="score">점수순</option>
+          <option value="mcap">시가총액순</option>
+          <option value="low60">60일 저점에 가까운 순</option>
+        </select>
+      </div>
+      <div class="key-strip"></div><ol class="list" id="lall"></ol>
+    </section>
+    <section class="pane rules" data-pane="rules" id="rules"></section>
+  </main>
+</div>
+
+<div id="sheet" class="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="d-name">
+  <div class="sheet-in">
+    <div class="sheet-head">
+      <button id="close" class="close" aria-label="닫기">닫기</button>
+    </div>
+    <div id="detail"></div>
+  </div>
+</div>
+<div id="tip" class="tip" hidden></div>
+
+<script src="app.js"></script>
+<script>
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+</script>
+</body>
+</html>
