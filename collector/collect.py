@@ -389,7 +389,9 @@ def multi(corps, year, reprt, refresh):
     """다중회사 주요계정. 반환 {corp: {acc: {cur, prev, cur_add, prev_add}}}"""
     name = f"fin_{year}_{reprt}"
     cache = load(name)
-    todo = [c for c in corps if c not in cache] if refresh or not cache else []
+    asked = set(cache.pop("_asked", []))
+    # 새로 후보에 든 회사는 항상 조회, 이미 물어봤는데 자료가 없던 회사는 refresh일 때만 다시 조회
+    todo = [c for c in corps if c not in cache and (refresh or c not in asked)]
     for i in range(0, len(todo), 100):
         chunk = todo[i:i + 100]
         j = dart("fnlttMultiAcnt.json", {"corp_code": ",".join(chunk), "bsns_year": str(year), "reprt_code": reprt})
@@ -409,8 +411,9 @@ def multi(corps, year, reprt, refresh):
                                   num(it.get("bfefrmtrm_amount")), num(it.get("thstrm_add_amount")),
                                   num(it.get("frmtrm_add_amount"))]
             cache[c] = out
+    asked |= set(todo)
     if todo:
-        save(name, cache)
+        save(name, {**cache, "_asked": sorted(asked)})
         log(f"  주요계정 {year}/{reprt}: {len(cache)}개사")
     return cache
 
