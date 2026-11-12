@@ -169,13 +169,29 @@ def r1(x):
 
 
 # ───────────── A. 매도 소진 ─────────────
-def sig_A(x, W):
+def event_day(x, i, ex):
+    """실적 공시 당일·다음 거래일, 코스피 −3% 이상 급락일이면 사유를 돌려줌"""
+    earn = ex.get("earn_days", set())
+    if x.d[i] in earn or (i > 0 and x.d[i - 1] in earn):
+        return "실적 발표 반응"
+    if x.d[i] in ex.get("crash_days", set()):
+        return "시장 급락일"
+    return None
+
+
+def sig_A(x, W, ex=None):
+    ex = ex or {}
     out = {}
     c, l, o, v, n = x.c, x.l, x.o, x.v, x.n
     best = None
+    skipped = None
     for i in range(max(21, n - x.V - 1), n):
         base = x.avg_vol(i)
         if not base:
+            continue
+        why = event_day(x, i, ex)
+        if why and v[i] / base >= 2:
+            skipped = (i, why, v[i] / base)
             continue
         r = v[i] / base
         falling = (x.ma60[i] is not None and c[i] < x.ma60[i]) or c[i] / c[i - 20] - 1 <= -0.08
@@ -201,11 +217,15 @@ def sig_A(x, W):
                 out["A2"] = (0, f"이후 거래량이 평소의 {ratio:.0%}로 아직 많음", None)
         else:
             out["A2"] = (0, "대량거래 후 3일 이상 지나야 판정", None)
+    elif skipped:
+        i, why, r = skipped
+        out["A1"] = (0, f"{x.date(i)} 거래량 {r:.1f}배는 {why}이라 매도 소진으로 보지 않음", None)
+        out["A2"] = (0, "기준이 되는 대량거래 없음", None)
     else:
         out["A1"] = (0, f"최근 {x.V}일 하락 중 대량거래 없음", None)
         out["A2"] = (0, "기준이 되는 대량거래 없음", None)
 
-    best = None
+    best, s_up = None, None
     for i in range(max(11, n - 10), n):
         down = c[i - 1] < c[i - 11] * 0.97 or (x.ma20[i] is not None and c[i] < x.ma20[i])
         if not down:
@@ -214,11 +234,19 @@ def sig_A(x, W):
         lower = min(o[i], c[i]) - l[i]
         hammer = lower >= 2 * max(body, c[i] * 0.002) and lower / c[i] >= 0.015
         bull = o[i] > 0 and (c[i] - o[i]) / o[i] >= 0.04 and c[i - 1] < c[i - 6]
+        if (hammer or bull) and x.d[i] in ex.get("sector_up", set()):
+            s_up = i
+            continue
         if hammer or bull:
             pts = W["A3"] * x.decay(i)
             if best is None or pts >= best[0]:
                 best = (pts, i, "아랫꼬리" if hammer else "하락 후 장대양봉")
-    out["A3"] = (r1(best[0]), f"{x.date(best[1])} {best[2]}", best[1]) if best else (0, "최근 10일 지지 캔들 없음", None)
+    if best:
+        out["A3"] = (r1(best[0]), f"{x.date(best[1])} {best[2]}", best[1])
+    elif s_up is not None:
+        out["A3"] = (0, f"{x.date(s_up)} 반등 캔들은 같은 업종이 함께 오른 날이라 종목 고유 신호로 보지 않음", None)
+    else:
+        out["A3"] = (0, "최근 10일 지지 캔들 없음", None)
     return out
 
 
@@ -240,7 +268,8 @@ def divergence_pair(x):
     return l1, l2
 
 
-def sig_B(x, W):
+def sig_B(x, W, ex=None):
+    ex = ex or {}
     out = {}
     lo = max(0, x.n - x.V - 1)
     rs = [(x.rsi[i], i) for i in range(lo, x.n) if x.rsi[i] is not None]
@@ -257,18 +286,21 @@ def sig_B(x, W):
     pair = divergence_pair(x)
     if pair:
         a, b = pair
+        shock = any(x.d[a] < d <= x.d[b] for d in ex.get("earn_days", set()))
+        k = 0.5 if shock else 1.0
+        tail = ", 사이에 실적 발표가 있어 절반만 인정" if shock else ""
         ra, rb = x.rsi[a], x.rsi[b]
         if ra is not None and rb is not None and rb > ra + 2 and ra <= 40:
-            out["B2"] = (r1(W["B2"] * x.decay(b)), f"저점 {x.date(a)}→{x.date(b)} 주가↓ RSI {ra:.0f}→{rb:.0f}", b)
+            out["B2"] = (r1(W["B2"] * x.decay(b) * k), f"저점 {x.date(a)}→{x.date(b)} 주가↓ RSI {ra:.0f}→{rb:.0f}{tail}", b)
         else:
             out["B2"] = (0, "저점은 낮아졌지만 RSI도 함께 낮아짐", None)
         ha, hb = x.hist[a], x.hist[b]
         if ha is not None and hb is not None and ha < 0 and hb > ha:
-            out["B3"] = (r1(W["B3"] * x.decay(b)), f"저점 {x.date(a)}→{x.date(b)} MACD 히스토그램 상승", b)
+            out["B3"] = (r1(W["B3"] * x.decay(b) * k), f"저점 {x.date(a)}→{x.date(b)} MACD 히스토그램 상승{tail}", b)
         else:
             out["B3"] = (0, "MACD 저점 상승 없음", None)
         if x.obv[b] > x.obv[a]:
-            out["B6"] = (r1(W["B6"] * x.decay(b)), f"저점 {x.date(a)}→{x.date(b)} OBV 상승", b)
+            out["B6"] = (r1(W["B6"] * x.decay(b) * k), f"저점 {x.date(a)}→{x.date(b)} OBV 상승{tail}", b)
         else:
             out["B6"] = (0, "OBV도 함께 하락", None)
     else:
@@ -327,7 +359,10 @@ def sig_C(x, W, kospi):
                 if c[k] > neck and av and v[k] >= 1.5 * av:
                     brk = k
                     break
-            if brk is not None:
+            if brk is not None and c[-1] < neck:
+                pts, pos = 0.0, None
+                note = f"{kind} {x.date(brk)} 넥라인 {neck:,.0f} 돌파 후 다시 아래로 내려옴(돌파 실패)"
+            elif brk is not None:
                 pts = W["C1"] * x.decay(brk)
                 note = f"{kind} {x.date(p1)}·{x.date(p2)}, {x.date(brk)} 넥라인 {neck:,.0f} 거래량 돌파"
                 pos = brk
@@ -337,7 +372,7 @@ def sig_C(x, W, kospi):
                 pos = None
             else:
                 continue
-            if best is None or pts > best[0]:
+            if best is None or pts > best[0] or (pts == 0 and best[0] == 0 and "돌파 실패" in note):
                 best = (pts, note, pos)
     out["C1"] = (r1(best[0]), best[1], best[2]) if best else (0, "최근 60일 바닥 패턴 없음", None)
 
@@ -373,7 +408,7 @@ def sig_C(x, W, kospi):
 
 
 # ───────────── D. 수급 ─────────────
-def sig_D(x, W, flows, foreign, short):
+def sig_D(x, W, flows, foreign, short, ex=None):
     """flows: [(날짜, 외국인+기관 순매수 백만원)], foreign: [(날짜, 지분율%)], short: [(날짜, 잔고주식수)]"""
     out = {}
     if len(flows) >= 10:
@@ -385,12 +420,19 @@ def sig_D(x, W, flows, foreign, short):
                 k += 1
             else:
                 break
-        if s5 > 0:
+        tv = sum(cc * vv for cc, vv in zip(x.c[-20:], x.v[-20:])) / 20 / 1e6  # 하루 평균 거래대금(백만원)
+        if s5 > 0 and s5 < tv * 0.1:
+            out["D1"] = (0, f"5일 순매수 {s5 / 100:+,.0f}억, 하루 거래대금({tv / 100:,.0f}억)의 10% 미만이라 규모 미미", None)
+        elif s5 > 0:
             base = W["D1"] * (0.75 if prev < 0 else 0.375)
             bonus = W["D1"] * (0.25 if k >= 3 else 0.125 if k >= 2 else 0)
             what = "전환" if prev < 0 else "지속"
-            out["D1"] = (r1(min(W["D1"], base + bonus)),
-                         f"5일 순매수 {s5 / 100:+,.0f}억 ({what})" + (f", {k}일 연속" if k >= 2 else ""), x.n - 1)
+            pos_days = sum(1 for f in vals[-5:] if f > 0)
+            pts = min(W["D1"], base + bonus)
+            note = f"5일 순매수 {s5 / 100:+,.0f}억 ({what})" + (f", {k}일 연속" if k >= 2 else "")
+            if pos_days < 3:
+                pts, note = pts * 0.5, note + f" → 5일 중 순매수일 {pos_days}일뿐이라 절반"
+            out["D1"] = (r1(pts), note, x.n - 1)
         else:
             out["D1"] = (0, f"5일 순매도 {s5 / 100:,.0f}억", None)
     else:
@@ -422,7 +464,9 @@ def sig_D(x, W, flows, foreign, short):
         mn, cur = w[mn_i][1], w[-1][1]
         age = len(w) - 1 - mn_i
         up = cur - mn
-        if age >= 5 and up >= 0.3:
+        if ex and ex.get("retire_recent") and up >= 0.1:
+            out["D4"] = (0, f"지분율 {mn:.2f}% → {cur:.2f}%, 최근 자사주 소각으로 기계적으로 올랐을 수 있어 인정 안 함", None)
+        elif age >= 5 and up >= 0.3:
             out["D4"] = (W["D4"], f"지분율 {mn:.2f}% → {cur:.2f}% (+{up:.2f}%p)", x.n - 1)
         elif age >= 5 and up >= 0.1:
             out["D4"] = (r1(W["D4"] * 0.5), f"지분율 {mn:.2f}% → {cur:.2f}% (+{up:.2f}%p)", x.n - 1)
@@ -434,34 +478,65 @@ def sig_D(x, W, flows, foreign, short):
 
 
 # ───────────── E. 가치 바닥 ─────────────
-def sig_E(W, fund):
+def sig_E(W, fund, ex=None):
     """fund: [(날짜, PER, PBR, 배당수익률)] 5년 주간 + 최신"""
+    ex = ex or {}
     out = {}
     if len(fund) < 100:
         for k in ("E1", "E2", "E3"):
             out[k] = (None, "5년 밸류 이력 부족(2년 미만)", None)
         return out
     per, pbr, div = fund[-1][1], fund[-1][2], fund[-1][3]
-    yrs = f"{len(fund) / 52:.0f}년"
+    years = len(fund) / 52
+    yrs = f"{years:.1f}년" if years < 4.5 else "5년"
+    short_hist = years < 3
 
     if pbr and pbr > 0:
-        p = pct_rank([f[2] for f in fund if f[2] and f[2] > 0], pbr)
+        p5 = pct_rank([f[2] for f in fund if f[2] and f[2] > 0], pbr)
+        p3 = pct_rank([f[2] for f in fund[-157:] if f[2] and f[2] > 0], pbr) if years >= 3.5 else p5
+        p = max(p5, p3)
         pts = W["E1"] if p <= 10 else W["E1"] * (1 - (p - 10) * 0.0375) if p <= 20 else 0
-        out["E1"] = (r1(pts), f"PBR {pbr:.2f}배, {yrs} 중 하위 {p:.0f}%", None)
+        note = f"PBR {pbr:.2f}배, {yrs} 중 하위 {p5:.0f}%" + (f", 최근 3년 중 하위 {p3:.0f}%" if p3 > p5 + 2 else "")
+        cuts = []
+        if pts and ex.get("op_drop"):
+            cuts.append("이익 급감(가치 함정 위험)")
+        if pts and (ex.get("roe") or 0) >= 15:
+            cuts.append(f"ROE {ex['roe']:.0f}% 고수익 기업은 PBR 신뢰도 낮음")
+        if pts and short_hist:
+            cuts.append("이력 3년 미만")
+        if cuts:
+            pts *= 0.5
+            note += " → 절반 인정: " + ", ".join(cuts)
+        out["E1"] = (r1(pts), note, None)
     else:
         out["E1"] = (0, "PBR 없음", None)
 
     if div and div > 0:
         p = pct_rank([f[3] for f in fund if f[3] is not None], div)
         pts = W["E2"] if p >= 90 else W["E2"] * (0.625 + (p - 80) * 0.0375) if p >= 80 else 0
-        out["E2"] = (r1(pts), f"시가배당률 {div:.2f}%, {yrs} 중 상위 {100 - p:.0f}%", None)
+        note = f"시가배당률 {div:.2f}%, {yrs} 중 상위 {100 - p:.0f}%"
+        if pts and div < 2:
+            pts, note = 0, note + " → 2% 미만이라 인정 안 함"
+        elif pts and (ex.get("op_drop") or ex.get("ni_loss")):
+            pts, note = pts * 0.5, note + " → 이익 급감·순손실로 배당 지속성 확인 필요, 절반"
+        elif pts and short_hist:
+            pts, note = pts * 0.5, note + " → 이력 3년 미만이라 절반"
+        out["E2"] = (r1(pts), note, None)
     else:
         out["E2"] = (0, "배당 없음", None)
 
     if per and per > 0:
         p = pct_rank([f[1] for f in fund if f[1] and f[1] > 0], per)
         pts = W["E3"] if p <= 10 else W["E3"] * (1 - (p - 10) / 30) if p <= 20 else 0
-        out["E3"] = (r1(pts), f"PER {per:.1f}배, {yrs} 중 하위 {p:.0f}%", None)
+        note = f"PER {per:.1f}배, {yrs} 중 하위 {p:.0f}%"
+        loss = sum(1 for f in fund if not f[1] or f[1] <= 0) / len(fund)
+        if pts and ex.get("ni_loss"):
+            pts, note = 0, note + " → 최근 분기 순손실이라 인정 안 함(PER은 지난 연간 이익 기준)"
+        elif pts and loss > 0.25:
+            pts, note = 0, note + f" → 이력의 {loss:.0%}가 적자 구간이라 인정 안 함"
+        elif pts and short_hist:
+            pts, note = pts * 0.5, note + " → 이력 3년 미만이라 절반"
+        out["E3"] = (r1(pts), note, None)
     else:
         out["E3"] = (0, "적자 또는 PER 없음", None)
     return out
@@ -472,29 +547,61 @@ def days_between(a, b):
     return (dt.date(int(b[:4]), int(b[4:6]), int(b[6:])) - dt.date(int(a[:4]), int(a[4:6]), int(a[6:]))).days
 
 
-def sig_F(W, events, today):
-    """events: [{'k': 종류, 'd': YYYYMMDD, 'nm': 보고서명, 'who': ...}]"""
+def sig_F(W, events, today, ex=None):
+    """events: [{'k': 종류, 'd': YYYYMMDD, 'nm': 보고서명, 'who': ..., 'n': 주식수}]"""
+    ex = ex or {}
     out = {}
     within = lambda e, n: 0 <= days_between(e["d"], today) <= n
+    price, mcap = ex.get("price") or 0, ex.get("mcap") or 0
     buys = [e for e in events if e["k"] == "insider_buy" and within(e, 60)]
-    if buys:
-        e = max(buys, key=lambda e: e["d"])
-        who = ", ".join(sorted({b.get("who", "") for b in buys if b.get("who")}))[:40]
-        out["F1"] = (W["F1"], f"{e['d'][4:6]}/{e['d'][6:]} 등 {len(buys)}건 보유 증가 보고" + (f" ({who})" if who else ""), None)
+    per_day = {}
+    for e in buys:
+        per_day.setdefault(e["d"], set()).add(e.get("who", ""))
+    group_days = {d for d, w in per_day.items() if len(w) >= 3}
+    real = [e for e in buys if e["d"] not in group_days]
+    big_sell = [e for e in events if e["k"] in ("holder_sell", "insider_sell") and within(e, 365)
+                and (e.get("n") or 0) * price >= max(1e9, mcap * 0.001)]
+    if big_sell:
+        e = max(big_sell, key=lambda e: e["d"])
+        out["F1"] = (0, f"최근 1년 {e.get('who', '')} 등 대량 매도 이력({e['d'][2:4]}.{e['d'][4:6]}.{e['d'][6:]})이 있어 인정 안 함", None)
+    elif real:
+        amt = sum((e.get("n") or 0) for e in real) * price
+        who = ", ".join(sorted({b.get("who", "") for b in real if b.get("who")}))[:40]
+        small = len(real) == 1 or amt < max(1e9, mcap * 0.0002)
+        pts = W["F1"] * (0.5 if small else 1)
+        note = f"{len(real)}건 약 {amt / 1e8:,.1f}억 원 보유 증가" + (f" ({who})" if who else "")
+        if small:
+            note += " → 1건이거나 규모가 작아 절반"
+        out["F1"] = (r1(pts), note, None)
+    elif buys:
+        out["F1"] = (0, f"최근 60일 증가 보고 {len(buys)}건은 같은 날 여러 명이 함께 보고해 주식보상으로 보고 제외", None)
     else:
         out["F1"] = (0, "최근 60일 임원·주요주주 보유 증가 없음", None)
     bb = [e for e in events if e["k"] == "buyback" and within(e, 60)]
     out["F2"] = ((W["F2"], f"{bb[-1]['d'][4:6]}/{bb[-1]['d'][6:]} {bb[-1]['nm']}", None) if bb
                  else (0, "최근 60일 자사주 취득 결정 없음", None))
     rt = [e for e in events if e["k"] == "retire" and within(e, 365)]
-    out["F3"] = ((W["F3"], f"{rt[-1]['d'][:4]}.{rt[-1]['d'][4:6]}.{rt[-1]['d'][6:]} 주식소각결정", None) if rt
-                 else (0, "최근 1년 소각 공시 없음", None))
+    dil = [e for e in events if e["k"] == "dilution" and within(e, 365)]
+    allbb = [e for e in events if e["k"] == "buyback"]
+    same = rt and any(abs(days_between(b["d"], rt[-1]["d"])) <= 120 for b in allbb)
+    if rt and dil:
+        out["F3"] = (0, f"소각 공시가 있지만 1년 안에 신주 발행({dil[-1]['nm']})이 있어 상계", None)
+    elif same:
+        out["F3"] = (0, "소각이 자사주 취득 결정과 같은 건이라 따로 세지 않음", None)
+    elif rt:
+        out["F3"] = (W["F3"], f"{rt[-1]['d'][:4]}.{rt[-1]['d'][4:6]}.{rt[-1]['d'][6:]} 주식소각결정", None)
+    else:
+        out["F3"] = (0, "최근 1년 소각 공시 없음", None)
     return out
 
 
 def sig_G(W, q):
     """q: [(분기라벨, 당기 영업이익, 전년동기 영업이익)] 오래된→최신, 최소 2개"""
     out = {}
+    if q and q[-1][1] == "pending":
+        out["G1"] = (None, f"{q[-1][0]} 잠정실적이 발표됐지만 수치를 읽지 못해 점수 보류(공시 원문 확인)", None)
+        out["G2"] = (None, "새 실적 발표 후 점수 보류", None)
+        return out
     if not q or len(q) < 1 or q[-1][1] is None or q[-1][2] is None:
         out["G1"] = (None, "분기 실적 미수집", None)
         out["G2"] = (None, "분기 실적 미수집", None)
@@ -503,14 +610,21 @@ def sig_G(W, q):
     def g(cur, prev):
         return (cur - prev) / abs(prev) if prev else (1.0 if cur > 0 else -1.0 if cur < 0 else 0.0)
 
-    lab, cur, prev = q[-1]
+    lab, cur, prev = q[-1][:3]
     g_now = g(cur, prev)
     g_prev = g(q[-2][1], q[-2][2]) if len(q) >= 2 and q[-2][1] is not None and q[-2][2] is not None else None
+    pq = q[-1][3] if len(q[-1]) > 3 else (q[-2][1] if len(q) >= 2 else None)
+    qoq = g(cur, pq) if pq else None
+    extreme = g_prev is not None and abs(g_prev) > 3
     eok = lambda v: f"{v / 1e8:,.0f}억"
     desc = f"{lab} 영업이익 {eok(cur)} (전년 {eok(prev)}, {g_now:+.0%})"
+    if extreme:
+        g_prev = None
     if cur > prev:
         out["G1"] = (W["G1"], desc, None)
-        if g_prev is not None and g_prev < 0:
+        if extreme:
+            out["G2"] = (0, "직전 분기는 일회성 손익으로 증감률이 극단적이라 비교하지 않음", None)
+        elif g_prev is not None and g_prev < 0:
             out["G2"] = (W["G2"], f"직전 분기 {g_prev:+.0%}에서 증가로 전환", None)
         else:
             out["G2"] = (0, "직전 분기도 증가(전환 아님)" if g_prev is not None else "직전 분기 비교 불가", None)
@@ -519,7 +633,14 @@ def sig_G(W, q):
         if g_prev is not None and g_now > g_prev:
             out["G2"] = (W["G2"], f"감소폭 축소 {g_prev:+.0%} → {g_now:+.0%}", None)
         else:
-            out["G2"] = (0, "감소폭 축소 아님" if g_prev is not None else "직전 분기 비교 불가", None)
+            out["G2"] = (0, "직전 분기 일회성 손익으로 비교하지 않음" if extreme else "감소폭 축소 아님" if g_prev is not None else "직전 분기 비교 불가", None)
+    if qoq is not None and qoq <= -0.1:
+        for k in ("G1", "G2"):
+            p, n, pos = out[k]
+            if p:
+                out[k] = (r1(p * 0.5), n + f" → 전 분기 대비 {qoq:+.0%} 둔화라 절반", pos)
+            elif k == "G1":
+                out[k] = (p, n + f", 전 분기 대비 {qoq:+.0%}", pos)
     return out
 
 
@@ -540,7 +661,7 @@ def penalties(P, events, today):
 
 
 # ───────────── 종합 ─────────────
-def stage_of(x, subs, ts):
+def stage_of(x, subs, ts, ex=None):
     """단계는 상태 판정이라 근거를 60일까지 봅니다(점수는 유효기간 안의 신호만).
     ① 최근 20일 RSI 30 이하 또는 최근 10일 이격도 90 이하
     ② 60일 안에 과매도 + (거래량 급감 또는 다이버전스) + 최근 10일 신저가 없음 + 60일 저점 대비 20% 이내
@@ -554,7 +675,7 @@ def stage_of(x, subs, ts):
 
     s1_now = oversold(x, x.V)
     x60 = Ctx(ts, 60)
-    ev = {**sig_A(x60, {k: 1 for k in ("A1", "A2", "A3")}), **sig_B(x60, {k: 1 for k in ("B1", "B2", "B3", "B4", "B5", "B6")})}
+    ev = {**sig_A(x60, {k: 1 for k in ("A1", "A2", "A3")}, ex), **sig_B(x60, {k: 1 for k in ("B1", "B2", "B3", "B4", "B5", "B6")}, ex)}
     rs60 = [x.rsi[i] for i in range(max(0, x.n - 61), x.n) if x.rsi[i] is not None]
     s1_any = s1_now or bool(rs60 and min(rs60) <= 30) or met(ev, "B5")
     w = x.l[max(0, x.n - 60):]
@@ -570,15 +691,26 @@ def stage_of(x, subs, ts):
     return 1 if s1_now else 0
 
 
-def score_stock(ts, W, P, valid_days, kospi, flows, foreign, short, fund, events, quarters, today):
+def op_yoy(q):
+    """최신 분기 영업이익 전년 대비 증감률(없으면 None)"""
+    if not q or q[-1][1] in (None, "pending") or q[-1][2] in (None, 0):
+        return None
+    return (q[-1][1] - q[-1][2]) / abs(q[-1][2])
+
+
+def score_stock(ts, W, P, valid_days, kospi, flows, foreign, short, fund, events, quarters, today, ex=None):
+    ex = dict(ex or {})
     x = Ctx(ts, valid_days)
+    g = op_yoy(quarters)
+    ex.setdefault("price", x.c[-1])
+    ex["op_drop"] = g is not None and g <= -0.3
     subs = {}
-    subs.update(sig_A(x, W))
-    subs.update(sig_B(x, W))
+    subs.update(sig_A(x, W, ex))
+    subs.update(sig_B(x, W, ex))
     subs.update(sig_C(x, W, kospi))
-    subs.update(sig_D(x, W, flows, foreign, short))
-    subs.update(sig_E(W, fund))
-    subs.update(sig_F(W, events, today))
+    subs.update(sig_D(x, W, flows, foreign, short, ex))
+    subs.update(sig_E(W, fund, ex))
+    subs.update(sig_F(W, events, today, ex))
     subs.update(sig_G(W, quarters))
     pen = penalties(P, events, today)
     raw = sum((v[0] or 0) for v in subs.values())
@@ -591,5 +723,6 @@ def score_stock(ts, W, P, valid_days, kospi, flows, foreign, short, fund, events
         "pen_total": p,
         "raw": round(raw, 1),
         "score": round(total, 1),
-        "stage": stage_of(x, subs, ts),
+        "stage": stage_of(x, subs, ts, ex),
+        "op_yoy": g,
     }

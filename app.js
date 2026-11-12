@@ -96,7 +96,7 @@ function card(it) {
     <div class="facts">${st}<span>${fmt(it.close)}원 <span class="${chg}">${it.chg > 0 ? "+" : ""}${fmt(it.chg, 2)}%</span></span>
       <span>60일 저점 +${fmt(it.low60, 1)}%</span><span>시총 ${it.rank}위</span></div>
     ${sounding(it)}
-    <div class="chips">${changed(it) ? `<span class="chg">단계 ${stageMark(it.prev)} → ${stageMark(it.stage)}</span>` : ""}${divChip(it)}${topChips(it)}</div>${pen}
+    <div class="chips">${it.warn && it.warn.length ? `<span class="wn">주의 공시 ${it.warn.length}</span>` : ""}${changed(it) ? `<span class="chg">단계 ${stageMark(it.prev)} → ${stageMark(it.stage)}</span>` : ""}${divChip(it)}${topChips(it)}</div>${pen}
   </button></li>`;
 }
 
@@ -216,6 +216,12 @@ function judgeHtml(it) {
   if (S.heat && S.heat.hot > S.heat.cold) notes.push(`증시 온도계가 과열 쪽(과열 ${S.heat.hot}, 냉각 ${S.heat.cold})이라 비중을 평소보다 낮게 보는 편이 맞습니다.`);
   if (S.heat && S.heat.cold >= 4) notes.push(`시장 전체가 냉각 국면(냉각 ${S.heat.cold}/${S.heat.n})입니다. 개별 종목 신호가 시장 하락에 묻힐 수 있으니 시장 바닥 확인을 함께 보세요.`);
   if (S.div && S.div.map[it.code]) notes.push(`배당가치 노트 후보 ${S.div.map[it.code].rank}위라 하방을 배당이 받쳐 줄 가능성이 있습니다.`);
+  if (it.sector) {
+    const gap = it.hi120 - it.sector.hi120;
+    notes.push(`같은 업종 ${it.sector.n}종목(${it.sector.names.map(esc).join(", ")} 등)의 120일 고점 대비 중간값은 ${fmt(it.sector.hi120, 1)}%입니다. 이 종목은 ${fmt(it.hi120, 1)}%로 업종보다 ${Math.abs(gap) < 5 ? "비슷하게" : gap < 0 ? `${fmt(-gap, 0)}%p 더` : `${fmt(gap, 0)}%p 덜`} 빠져, 하락이 ${Math.abs(gap) < 5 ? "업종 전체 흐름에 가깝습니다" : gap < 0 ? "회사 고유 요인도 섞여 있을 수 있습니다" : "업종보다 견조한 편입니다"}.`);
+  }
+  if (it.op_yoy != null && it.op_yoy >= 50) notes.push(`최근 분기 영업이익이 전년보다 ${fmt(it.op_yoy)}% 늘었습니다. 실적 바닥보다 이익 고점(피크아웃) 이후를 점검할 종목입니다.`);
+  if (it.warn && it.warn.length) notes.push(`<span class="err">주의 공시: ${it.warn.map(esc).join(", ")}</span>`);
   return `<section class="cat judge j-${tone}" id="judge"><div class="cat-h"><span>종합 판단 <small>앱 규칙 기준, 참고용</small></span><b class="op">${label}</b></div>
     <p class="why">${why}</p>
     ${strong.length ? `<p class="kv"><b>강한 근거</b> ${strong.join(", ")}</p>` : ""}
@@ -245,14 +251,16 @@ function levelsHtml(it, ch) {
     <tr><td>20일선</td><td>${fmt(L.ma20)}원${d(L.ma20)}</td></tr>
     <tr><td>60일선 <small>1차 저항</small></td><td>${fmt(L.ma60)}원${d(L.ma60)}</td></tr>
     <tr><td>120일 고점 <small>회복 목표</small></td><td>${fmt(L.hi120)}원${d(L.hi120)}</td></tr>
+    ${it.hi52 != null && it.hi52 < it.hi120 - 0.5 ? `<tr><td>52주 고점 대비</td><td>${fmt(it.hi52, 1)}%</td></tr>` : ""}
+    ${it.yr1 != null ? `<tr><td>1년 전 주가 대비 <small>${it.yr1 >= 0 ? "고점은 급등분일 수 있음" : ""}</small></td><td>${it.yr1 > 0 ? "+" : ""}${fmt(it.yr1, 1)}%</td></tr>` : ""}
   </tbody></table>
   <p class="kv">60일 최저가를 종가로 깨면 바닥 판단이 무효가 됩니다. 손실 폭 ${fmt((1 - L.lo60 / L.last) * 100, 1)}% 대비 120일 고점까지 회복 여력 ${fmt((L.hi120 / L.last - 1) * 100, 1)}%입니다.</p>`;
 }
 
 function discHtml(d) {
   const f = (x) => (x ? `${x.slice(2, 4)}.${x.slice(4, 6)}.${x.slice(6, 8)}` : "");
-  if (!d.length) return `<div class="cat-h"><span>최근 공시</span><small>90일, 0건</small></div><p class="stage-note">최근 90일 공시가 없거나 아직 수집 전입니다.</p>`;
-  return `<div class="cat-h"><span>최근 공시</span><small>90일, ${d.length}건</small></div><ul class="disc">${d.slice(0, 15).map((x) => `<li>
+  if (!d.length) return `<div class="cat-h"><span>최근 공시</span><small>6개월, 0건</small></div><p class="stage-note">최근 6개월 공시가 없거나 아직 수집 전입니다.</p>`;
+  return `<div class="cat-h"><span>최근 공시</span><small>6개월, ${d.length}건</small></div><ul class="disc">${d.slice(0, 15).map((x) => `<li>
     <a href="https://dart.fss.or.kr/dsaf001/main.do?rcpNo=${x.no}" target="_blank" rel="noopener">${esc(x.t)}</a>${(x.f || []).map((t) => `<span class="fl bad">${esc(t)}</span>`).join("")}${(x.g || []).map((t) => `<span class="fl good">${esc(t)}</span>`).join("")}
     <small>${f(x.d)} ${esc(x.by || "")}</small></li>`).join("")}</ul>
     ${d.length > 15 ? `<p class="stage-note">최근 15건만 표시합니다. 나머지는 DART에서 확인하세요.</p>` : ""}`;
@@ -269,7 +277,10 @@ function promptText(it) {
     `${it.name}(${it.code}) 매수 판단을 위해 추가 분석해 줘.`,
     ``,
     `[바닥 신호 앱 수치, ${m.asof} 종가 기준]`,
-    `현재가 ${fmt(it.close)}원, 시가총액 ${fmt(it.mcap / 10000, 1)}조 원(코스피 ${it.rank}위), 120일 고점 대비 ${fmt(it.hi120, 1)}%, 60일 저점 대비 +${fmt(it.low60, 1)}%`,
+    `현재가 ${fmt(it.close)}원, 시가총액 ${fmt(it.mcap / 10000, 1)}조 원(코스피 ${it.rank}위), 120일 고점 대비 ${fmt(it.hi120, 1)}%, 52주 고점 대비 ${fmt(it.hi52, 1)}%, 60일 저점 대비 +${fmt(it.low60, 1)}%${it.yr1 != null ? `, 1년 전 대비 ${it.yr1 > 0 ? "+" : ""}${fmt(it.yr1, 1)}%` : ""}`,
+    it.sector ? `같은 업종(${it.sector.names.join(", ")} 등 ${it.sector.n}종목) 120일 고점 대비 중간값 ${fmt(it.sector.hi120, 1)}%` : null,
+    it.op_yoy != null ? `최근 분기 영업이익 전년 대비 ${it.op_yoy > 0 ? "+" : ""}${fmt(it.op_yoy)}% (${it.subs.G1[1]})` : null,
+    it.warn && it.warn.length ? `주의 공시: ${it.warn.join(", ")}` : null,
     `단계: ${STAGE[it.stage]}${it.stage ? ` (${sinceText(it, m.asof)})` : ""}, 바닥 점수 ${fmt(it.score, 1)}/100 (${cats})`,
     `앱 규칙 의견: ${label}`,
     lit.length ? `켜진 신호: ${lit.join(" / ")}` : `켜진 신호: 없음`,
@@ -287,9 +298,11 @@ function promptText(it) {
     `3. 최근 실적 흐름과 올해·내년 컨센서스, 실적 바닥 여부`,
     `4. 최근 공시와 기사의 특이사항 (증자·사채, 대주주 지분 변동, 소송, 지배구조, 자사주·배당 정책)`,
     `5. 증권사 리포트의 투자의견·목표주가 변화와 주요 논점`,
-    `6. 수급: 외국인·기관 매매 흐름과 공매도·신용 상황`,
-    `7. 매수 의견: 매수 검토 / 분할 매수 / 관망 / 회피 중 하나와 핵심 근거, 반대 근거, 진입 조건, 손절 기준, 목표 구간`,
-    `8. 마지막에 3줄 요약 (의견, 핵심 이유, 다음에 확인할 것)`,
+    `6. 수급: 외국인·기관 매매 흐름, 공매도 잔고 변화의 성격(숏커버링 여부), 신용잔고 수준과 반대매매 물량`,
+    `7. 이 업종의 선행지표(원재료 스프레드, 운임, 환율, 수주 등) 현황과 방향, 노사·규제·소송·오너 재판 같은 단기 이벤트 위험, 분할·합병이 있으면 일정과 거래정지 기간`,
+    it.op_yoy != null && it.op_yoy >= 50 ? `8. 이익이 급증하는 중이므로 실적 바닥 대신 이익 고점(피크아웃) 시점과 그 이후 위험` : null,
+    `${it.op_yoy != null && it.op_yoy >= 50 ? 9 : 8}. 매수 의견: 매수 검토 / 분할 매수 / 관망 / 회피 중 하나와 핵심 근거, 반대 근거, 진입 조건, 손절 기준, 목표 구간`,
+    `${it.op_yoy != null && it.op_yoy >= 50 ? 10 : 9}. 마지막에 3줄 요약 (의견, 핵심 이유, 다음에 확인할 것)`,
   ];
   return lines.filter((x) => x !== null).join("\n");
 }
@@ -408,6 +421,20 @@ function renderRules() {
       <tr><td>유상증자·CB·BW·EB 발행 결정(90일)</td><td class="r">${P.dilution}</td></tr>
       <tr><td>주요주주 지분 감소 보고(90일)</td><td class="r">${P.holder_sell}</td></tr>
       <tr><td>횡령·배임·소송 공시(180일)</td><td class="r">${P.legal}</td></tr></tbody></table>
+    <h3>점수 보정 규칙</h3>
+    <ul>
+      <li>실적 발표 당일·다음날과 코스피 3% 이상 급락일의 대량거래는 매도 소진으로 보지 않습니다.</li>
+      <li>다이버전스의 두 저점 사이에 실적 발표가 있으면 절반만 인정합니다.</li>
+      <li>이중바닥·N자 돌파 후 다시 넥라인 아래로 내려오면 0점입니다.</li>
+      <li>5일 순매수가 하루 평균 거래대금의 10%에 못 미치면 0점입니다.</li>
+      <li>PBR 하단은 이익 급감(30% 이상 감소), ROE 15% 이상, 이력 3년 미만이면 절반입니다. 시가배당률은 2% 미만이면 0점, PER 하단은 이력의 25% 넘게 적자였으면 0점입니다.</li>
+      <li>임원 지분 증가는 같은 날 3명 이상 함께 보고하면 주식보상으로 보고 제외하고, 1건이거나 규모가 작으면 절반, 최근 1년 대주주·임원 대량 매도가 있으면 0점입니다. 자사주 소각은 1년 안에 신주 발행이 있으면 0점입니다.</li>
+      <li>분기보고서보다 새 잠정실적 공시가 있으면 공시 원문에서 영업이익·순이익을 읽어 씁니다. 읽지 못하면 실적 점수를 보류합니다.</li>
+      <li>실적 점수는 전 분기 대비 10% 넘게 줄었으면 절반이고, 직전 분기 증감률이 일회성 손익으로 ±300%를 넘으면 비교하지 않습니다.</li>
+      <li>PBR 하단은 5년과 최근 3년 중 덜 유리한 쪽으로 봅니다. 최근 분기 순손실이면 PER 하단은 0점, 이익 급감·순손실이면 배당 점수는 절반입니다.</li>
+      <li>자사주 소각이 취득 결정과 120일 안에 붙어 있으면 같은 건으로 보고 따로 세지 않습니다. 최근 60일 소각이 있으면 외국인 지분율 반등은 인정하지 않습니다.</li>
+      <li>같은 업종이 함께 3% 넘게 오른 날의 반등 캔들은 인정하지 않고, 5일 중 순매수일이 3일 미만이면 순매수 점수는 절반입니다.</li>
+    </ul>
     <p>기술적 신호는 발생 후 ${m.valid_days}거래일 안에서만 점수를 주고, 3일이 지나면 점점 줄여 유효기간 끝에는 40%까지 낮춥니다. 신용잔고는 종목별 공개 출처가 없어 아직 0점으로 둡니다.</p>
     <h3>단계</h3>
     <ol>

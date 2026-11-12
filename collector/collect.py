@@ -382,7 +382,7 @@ def company(corps):
     return cache
 
 
-ACC = {"op": ("영업이익",), "equity": ("자본총계",), "capital": ("자본금",), "rev": ("매출액", "영업수익")}
+ACC = {"op": ("영업이익",), "equity": ("자본총계",), "capital": ("자본금",), "rev": ("매출액", "영업수익"), "ni": ("당기순이익",)}
 
 
 def multi(corps, year, reprt, refresh):
@@ -553,13 +553,124 @@ def disclosures(today):
 
 GOOD = {"buyback": "자사주 취득", "retire": "소각"}
 BAD = {"dilution": "증자·사채", "legal": "소송·횡령", "unfaithful": "불성실공시"}
-BAD_WORDS = ("최대주주변경", "감자결정", "관리종목", "상장폐지", "영업정지", "회생절차", "부도", "감사의견")
+BAD_WORDS = ("최대주주변경", "감자결정", "관리종목", "상장폐지", "영업정지", "회생절차", "부도", "감사의견", "채무보증", "금전대여")
+PRELIM = ("영업(잠정)실적", "영업(잠정)실적")
+EARN = ("영업(잠정)실적", "매출액또는손익구조")
+WARN = [  # (보고서명에 든 말, 경고 이름, 며칠 안)
+    ("채무보증", "채무보증 결정", 90),
+    ("금전대여", "계열사 등 금전대여", 90),
+    ("최대주주등소유주식변동", "최대주주 지분 변동(오버행 점검)", 30),
+    ("대량보유상황보고", "대량보유 지분 변동(오버행 점검)", 30),
+    ("교환사채", "교환사채 관련(오버행 점검)", 90),
+    ("자기주식처분", "자사주 처분 결정(매도 물량)", 90),
+    ("분할결정", "회사 분할 결정(일정·거래정지 확인)", 180),
+    ("분할합병", "분할합병 결정(일정·거래정지 확인)", 180),
+    ("합병결정", "합병 결정(조건·일정 확인)", 180),
+    ("주식교환", "주식 교환·이전 결정(일정 확인)", 180),
+    ("포괄적교환", "주식 교환·이전 결정(일정 확인)", 180),
+]
 
 
-def recent_disc(corp, today, days=90):
+def flat(t):
+    return re.sub(r"^\[[^\]]*\]\s*", "", t).replace(" ", "")
+
+
+def warnings_of(disc, today):
+    out = []
+    for w, label, days in WARN:
+        hit = [x for x in disc if w in flat(x["t"]) and SG.days_between(x["d"], today) <= days
+               and not (label.startswith("대량보유") and INSTITUTION.search(x.get("by", "")))
+               and not ("주식분할" in flat(x["t"]) or "종속회사" in x["t"] or "자회사" in x["t"])]
+        if hit and not any(o.startswith(label) for o in out):
+            out.append(f"{label} {hit[0]['d'][4:6]}/{hit[0]['d'][6:]}")
+    return out
+
+
+def quarter_of(d):
+    """잠정실적 공시일 → 해당 분기 (연도, 분기)"""
+    y, m = int(d[:4]), int(d[4:6])
+    return (y - 1, 4) if m <= 3 else (y, 1) if m <= 6 else (y, 2) if m <= 9 else (y, 3)
+
+
+def read_doc(no):
+    raw = dart("document.xml", {"rcept_no": no}, raw=True)
+    z = zipfile.ZipFile(io.BytesIO(raw))
+    txt = ""
+    for nm in z.namelist():
+        b = z.read(nm)
+        for enc in ("utf-8", "cp949"):
+            try:
+                txt += b.decode(enc)
+                break
+            except UnicodeDecodeError:
+                continue
+    return txt
+
+
+def parse_prelim(txt):
+    """공정공시 표에서 [당해실적, 전기, 전기대비%, 전년동기, 전년동기대비%] 행을 읽어
+    (영업이익 당기, 전년동기, 전기, 당기순이익 당기) 원 단위로. 영업이익을 못 읽으면 None"""
+    mu = re.search(r"단위\s*[:：]?\s*(억원|백만원|천원|원)", re.sub(r"<[^>]+>", " ", txt))
+    if not mu:
+        return None
+    unit = {"억원": 1e8, "백만원": 1e6, "천원": 1e3, "원": 1}[mu.group(1)]
+    found = {}
+    for row in re.findall(r"<TR[^>]*>(.*?)</TR>", txt, re.S | re.I):
+        cells = [re.sub(r"<[^>]+>", "", c).replace("&nbsp;", " ").replace("△", "-").replace("▲", "-").strip()
+                 for c in re.findall(r"<(?:TD|TE|TH|TU)[^>]*>(.*?)</(?:TD|TE|TH|TU)>", row, re.S | re.I)]
+        if not cells:
+            continue
+        lab = cells[0].replace(" ", "")
+        key = "op" if lab.startswith("영업이익") else "ni" if lab.startswith("당기순이익") else None
+        if not key or key in found:
+            continue
+        rest = cells[1:]
+        if rest and "누계" in rest[0]:
+            continue
+        if rest and "당해" in rest[0].replace(" ", ""):
+            rest = rest[1:]
+        n = [num(c) for c in rest]
+        if len(n) < 5 or n[0] is None:
+            continue
+        if n[4] is not None and n[3]:
+            if abs((n[0] - n[3]) / abs(n[3]) * 100 - n[4]) > 2:  # 열이 어긋났으면 쓰지 않음
+                continue
+        found[key] = [v * unit if v is not None else None for v in (n[0], n[3], n[1])]
+    op = found.get("op")
+    if not op or op[1] is None:
+        return None
+    return [op[0], op[1], op[2], (found.get("ni") or [None])[0]]
+
+
+def add_prelim(q, disc, cache):
+    """분기보고서보다 새 잠정실적이 있으면 덧붙임. 반환 (분기 목록, 최근 분기 순이익 또는 None).
+    못 읽으면 ('라벨', 'pending', None)"""
+    pre = [x for x in disc if any(p in flat(x["t"]) for p in PRELIM)]
+    if not pre:
+        return q, None
+    x = max(pre, key=lambda x: x["d"])
+    yy, qq = quarter_of(x["d"])
+    if q:
+        lab = q[-1][0]
+        if (2000 + int(lab[:2]), int(lab[3])) >= (yy, qq):
+            return q, None
+    label = f"{str(yy)[2:]}.{qq}Q 잠정"
+    if x["no"] not in cache or (cache[x["no"]] and len(cache[x["no"]]) < 4):
+        try:
+            cache[x["no"]] = parse_prelim(read_doc(x["no"]))
+        except Exception as e:  # noqa: BLE001
+            log(f"  잠정실적 읽기 실패 {x['no']}: {e}")
+            cache[x["no"]] = None
+    v = cache[x["no"]]
+    if not v:
+        return (q or [])[-1:] + [(label, "pending", None)], None
+    return (q or [])[-1:] + [(label, v[0], v[1], v[2])], v[3]
+
+
+def recent_disc(corp, today, days=180):
     """종목별 최근 공시(정정 포함 그대로) — 상세 화면 표시용"""
     j = dart("list.json", {"corp_code": corp, "bgn_de": (today - dt.timedelta(days=days)).strftime("%Y%m%d"),
-                           "end_de": today.strftime("%Y%m%d"), "page_count": 40})
+                           "end_de": today.strftime("%Y%m%d"), "page_count": 100})
     out = []
     for it in (j or {}).get("list", []):
         nm = re.sub(r"\s+", " ", it.get("report_nm", "")).strip()
@@ -578,7 +689,7 @@ def insider(corp, today):
     """임원·주요주주 특정증권 소유상황 보고(최근 120일): 증가=매수 신호, 주요주주 감소=감점"""
     j = dart("elestock.json", {"corp_code": corp})
     out = []
-    cut = (today - dt.timedelta(days=120)).strftime("%Y%m%d")
+    cut = (today - dt.timedelta(days=370)).strftime("%Y%m%d")
     for it in (j or {}).get("list", []):
         d = (it.get("rcept_dt") or "").replace("-", "")
         if d < cut:
@@ -591,9 +702,11 @@ def insider(corp, today):
             continue  # 국민연금·운용사 등 기관 매매는 내부자 신호가 아님
         main = (it.get("isu_main_shrholdr") or "").strip()
         if ch > 0:
-            out.append({"k": "insider_buy", "d": d, "who": who, "nm": "임원·주요주주 보유 증가"})
+            out.append({"k": "insider_buy", "d": d, "who": who, "n": ch, "nm": "임원·주요주주 보유 증가"})
         elif main not in ("", "-"):
-            out.append({"k": "holder_sell", "d": d, "who": who, "nm": "주요주주 보유 감소"})
+            out.append({"k": "holder_sell", "d": d, "who": who, "n": -ch, "nm": "주요주주 보유 감소"})
+        else:
+            out.append({"k": "insider_sell", "d": d, "who": who, "n": -ch, "nm": "임원 보유 감소"})
     return out
 
 
@@ -706,7 +819,25 @@ def main():
                 err(f"한국거래소 {name}", e)
 
     # 6) 필터 + 점수
+    # 업종 동반 급등일: 같은 업종(3종목 이상) 그날 등락률 중간값이 +3% 이상
+    sector_up, by_ind = {}, {}
+    for r in base:
+        c = corp_map.get(r["code"])
+        t = ts.get(r["code"])
+        if c and t and induty.get(c):
+            by_ind.setdefault(induty[c][:3], []).append(t)
+    for ind, tss in by_ind.items():
+        if len(tss) < 3:
+            continue
+        rets = {}
+        for t in tss:
+            for i in range(max(1, len(t["c"]) - 30), len(t["c"])):
+                rets.setdefault(t["d"][i], []).append(t["c"][i] / t["c"][i - 1] - 1)
+        sector_up[ind] = {d for d, rs in rets.items() if len(rs) >= 3 and sorted(rs)[len(rs) // 2] >= 0.03}
     items, stage_hist = [], load("stage_hist")
+    prelim = load("prelim")
+    kd = kospi_ts["d"]
+    crash = {kd[i] for i in range(1, len(kd)) if kospi_ts["c"][i] / kospi_ts["c"][i - 1] - 1 <= -0.03}
     today_s = asof
     for r in base:
         code, name = r["code"], r["name"]
@@ -745,14 +876,39 @@ def main():
             excluded.append({"code": code, "name": name, "why": why})
             continue
 
+        disc = []
+        if corp and DART_KEY:
+            try:
+                disc = recent_disc(corp, today)
+            except SystemExit as e:
+                err("OpenDART 최근 공시", e)
+            except Exception as e:  # noqa: BLE001
+                err(f"최근 공시 {name}", e)
         fl = series_for(code, flows, dset)
         fr = series_for(code, foreign, dset)
         sh = series_for(code, short, dset)
         fu = [(d, *v) for d, v in sorted((d, fund[d][code]) for d in fund if code in fund[d])]
         evs = sorted(events.get(corp, []), key=lambda e: e["d"]) if corp else []
         q = quarters_for(corp, fins, qkeys) if corp else []
+        ni_q = None
+        if disc:
+            q, ni_q = add_prelim(q, disc, prelim)
+        if ni_q is None and corp:
+            for yy, rc, _, _ in qkeys:
+                v = (fins.get((yy, rc), {}).get(corp, {}).get("ni") or [None])[0]
+                if v is not None:
+                    ni_q = v
+                    break
+        a = fins.get((ay, "11011"), {}).get(corp, {}) if corp else {}
+        ni, eq = (a.get("ni") or [None])[0], (a.get("equity") or [None])[0]
+        ex = {"earn_days": {x["d"] for x in disc if any(p in flat(x["t"]) for p in EARN)},
+              "crash_days": crash, "mcap": r["mcap"] * 1e8,
+              "ni_loss": ni_q is not None and ni_q < 0,
+              "sector_up": sector_up.get((induty.get(corp) or "")[:3], set()) if corp else set(),
+              "retire_recent": any(e["k"] == "retire" and 0 <= SG.days_between(e["d"], today_s) <= 60 for e in evs),
+              "roe": ni / eq * 100 if ni is not None and eq else None}
         try:
-            res = SG.score_stock(t, W, P, V, kospi, fl, fr, sh, fu, evs, q, today_s)
+            res = SG.score_stock(t, W, P, V, kospi, fl, fr, sh, fu, evs, q, today_s, ex)
         except Exception as e:  # noqa: BLE001
             err(f"점수 {name}", e)
             traceback.print_exc()
@@ -777,23 +933,31 @@ def main():
             "close": x.c[-1], "chg": round((x.c[-1] / x.c[-2] - 1) * 100, 2),
             "low60": round((x.c[-1] / low60 - 1) * 100, 1),
             "hi120": round((x.c[-1] / max(x.h[-120:]) - 1) * 100, 1),
+            "hi52": round((x.c[-1] / max(x.h[-250:]) - 1) * 100, 1),
+            "yr1": round((x.c[-1] / x.c[-250] - 1) * 100, 1) if x.n >= 250 else None,
+            "op_yoy": None if res["op_yoy"] is None else round(res["op_yoy"] * 100),
+            "warn": warnings_of(disc, today_s),
+            "ind": (induty.get(corp) or "")[:3] if corp else "",
             "score": res["score"], "raw": res["raw"], "stage": res["stage"], "since": since,
             "prev": h[-2][1] if len(h) >= 2 else None,
             "cats": cats,
             "subs": {k: [v[0], v[1]] for k, v in res["subs"].items()},
             "pen": [list(p) for p in res["pen"]],
         })
-        disc = []
-        if corp and DART_KEY:
-            try:
-                disc = recent_disc(corp, today)
-            except SystemExit as e:
-                err("OpenDART 최근 공시", e)
-            except Exception as e:  # noqa: BLE001
-                err(f"최근 공시 {name}", e)
         write_chart(code, name, x, res, disc)
 
     save("stage_hist", {k: v for k, v in stage_hist.items() if any(i["code"] == k for i in items)})
+    save("prelim", prelim)
+    groups = {}
+    for it in items:
+        if it["ind"]:
+            groups.setdefault(it["ind"], []).append(it)
+    for it in items:
+        g = groups.get(it["ind"], [])
+        if len(g) >= 3:
+            hs = sorted(o["hi120"] for o in g)
+            it["sector"] = {"n": len(g), "hi120": hs[len(hs) // 2],
+                            "names": [o["name"] for o in sorted(g, key=lambda o: -o["mcap"])[:4] if o is not it][:3]}
     items.sort(key=lambda i: -i["score"])
     na = {k: True for k in ("D1", "D3", "D4", "E1", "F1", "G1") if items and all(i["subs"][k][0] is None for i in items)}
     out = {
