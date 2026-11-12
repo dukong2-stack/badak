@@ -278,6 +278,7 @@ function promptText(it) {
     ``,
     `[바닥 신호 앱 수치, ${m.asof} 종가 기준]`,
     `현재가 ${fmt(it.close)}원, 시가총액 ${fmt(it.mcap / 10000, 1)}조 원(코스피 ${it.rank}위), 120일 고점 대비 ${fmt(it.hi120, 1)}%, 52주 고점 대비 ${fmt(it.hi52, 1)}%, 60일 저점 대비 +${fmt(it.low60, 1)}%${it.yr1 != null ? `, 1년 전 대비 ${it.yr1 > 0 ? "+" : ""}${fmt(it.yr1, 1)}%` : ""}`,
+    it.nv && it.nv.per ? `네이버 기준 PER ${it.nv.per}배(최근 4개 분기)${it.nv.cns_per ? `, 추정 PER ${it.nv.cns_per}배` : ""}${it.nv.pbr ? `, PBR ${it.nv.pbr}배` : ""} — 앱의 가치 점수는 직전 사업연도 기준 5년 밴드` : null,
     it.sector ? `같은 업종(${it.sector.names.join(", ")} 등 ${it.sector.n}종목) 120일 고점 대비 중간값 ${fmt(it.sector.hi120, 1)}%` : null,
     it.op_yoy != null ? `최근 분기 영업이익 전년 대비 ${it.op_yoy > 0 ? "+" : ""}${fmt(it.op_yoy)}% (${it.subs.G1[1]})` : null,
     it.warn && it.warn.length ? `주의 공시: ${it.warn.join(", ")}` : null,
