@@ -660,10 +660,35 @@ def save_sample(name, text):
 NAVER_SAMPLE = {"done": False}
 
 
+NPAGE = {}
+
+
+def naver_page(code):
+    if code not in NPAGE:
+        r = naver_get("https://finance.naver.com/item/main.naver", {"code": code})
+        NPAGE[code] = r.content.decode("euc-kr", errors="replace")
+        time.sleep(0.1)
+    return NPAGE[code]
+
+
+def naver_ratios(code):
+    """네이버 투자정보: 최근 4개 분기 기준 PER·EPS, 최근 분기 PBR, 추정 PER"""
+    try:
+        html = naver_page(code)
+    except Exception:  # noqa: BLE001
+        return {}
+    out = {}
+    for k, i in (("per", "_per"), ("eps", "_eps"), ("pbr", "_pbr"), ("cns_per", "_cns_per")):
+        m = re.search(r'id="%s"[^>]*>([^<]+)<' % i, html)
+        v = num(m.group(1)) if m else None
+        if v is not None:
+            out[k] = v
+    return out
+
+
 def naver_quarters(code):
     """네이버 종목 화면 '기업실적분석' 표의 분기 실적 → {(연, 분기): (영업이익, 순이익)} 원 단위(실적만, 추정 제외)"""
-    r = naver_get("https://finance.naver.com/item/main.naver", {"code": code})
-    html = r.content.decode("euc-kr", errors="replace")
+    html = naver_page(code)
     m = re.search(r'class="section cop_analysis".*?<table[^>]*>(.*?)</table>', html, re.S)
     if not m:
         return {}
@@ -894,7 +919,9 @@ def main():
                 if name == "수급":
                     flows = res
                 elif name == "외국인 지분율":
-                    foreign = res
+                    # 거래소의 날짜별 지분율은 하루 전 값이라(네이버 보유율과 대조) 한 거래일 앞으로 옮김
+                    prev = {dates[i]: dates[i - 1] for i in range(1, len(dates))}
+                    foreign = {prev[d]: v for d, v in res.items() if d in prev}
                 elif name == "공매도":
                     short = res
                 else:
@@ -990,7 +1017,8 @@ def main():
               "ni_loss": ni_q is not None and ni_q < 0,
               "sector_up": sector_up.get((induty.get(corp) or "")[:3], set()) if corp else set(),
               "retire_recent": any(e["k"] == "retire" and 0 <= SG.days_between(e["d"], today_s) <= 60 for e in evs),
-              "roe": ni / eq * 100 if ni is not None and eq else None}
+              "roe": ni / eq * 100 if ni is not None and eq else None,
+              "nv": naver_ratios(code)}
         try:
             res = SG.score_stock(t, W, P, V, kospi, fl, fr, sh, fu, evs, q, today_s, ex)
         except Exception as e:  # noqa: BLE001
@@ -1015,6 +1043,7 @@ def main():
         items.append({
             "code": code, "name": name, "mcap": round(r["mcap"]), "rank": ranked.index(r) + 1,
             "close": x.c[-1], "chg": round((x.c[-1] / x.c[-2] - 1) * 100, 2),
+            "nv": ex.get("nv") or {},
             "low60": round((x.c[-1] / low60 - 1) * 100, 1),
             "hi120": round((x.c[-1] / max(x.h[-120:]) - 1) * 100, 1),
             "hi52": round((x.c[-1] / max(x.h[-250:]) - 1) * 100, 1),
@@ -1032,6 +1061,21 @@ def main():
 
     save("stage_hist", {k: v for k, v in stage_hist.items() if any(i["code"] == k for i in items)})
     save("prelim", prelim)
+    if st:
+        try:
+            cl = {}
+            for d in (dates[-2], dates[-1]):
+                df = krx_call(st.get_market_ohlcv, d, market="KOSPI")
+                c = col(df, "종가")
+                cl[d] = {k: float(v) for k, v in df[c].items()} if df is not None and not df.empty and c else {}
+            for it in items:
+                a, b = cl[dates[-1]].get(it["code"]), cl[dates[-2]].get(it["code"])
+                if a:
+                    it["close"] = a
+                    if b:
+                        it["chg"] = round((a / b - 1) * 100, 2)
+        except Exception as e:  # noqa: BLE001
+            err("거래소 종가", e)
     groups = {}
     for it in items:
         if it["ind"]:

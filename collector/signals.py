@@ -496,7 +496,7 @@ def sig_E(W, fund, ex=None):
         p3 = pct_rank([f[2] for f in fund[-157:] if f[2] and f[2] > 0], pbr) if years >= 3.5 else p5
         p = max(p5, p3)
         pts = W["E1"] if p <= 10 else W["E1"] * (1 - (p - 10) * 0.0375) if p <= 20 else 0
-        note = f"PBR {pbr:.2f}배, {yrs} 중 하위 {p5:.0f}%" + (f", 최근 3년 중 하위 {p3:.0f}%" if p3 > p5 + 2 else "")
+        note = f"PBR {pbr:.2f}배(직전 사업연도 자본 기준), {yrs} 중 하위 {p5:.0f}%" + (f", 최근 3년 중 하위 {p3:.0f}%" if p3 > p5 + 2 else "")
         cuts = []
         if pts and ex.get("op_drop"):
             cuts.append("이익 급감(가치 함정 위험)")
@@ -528,7 +528,7 @@ def sig_E(W, fund, ex=None):
     if per and per > 0:
         p = pct_rank([f[1] for f in fund if f[1] and f[1] > 0], per)
         pts = W["E3"] if p <= 10 else W["E3"] * (1 - (p - 10) / 30) if p <= 20 else 0
-        note = f"PER {per:.1f}배, {yrs} 중 하위 {p:.0f}%"
+        note = f"PER {per:.1f}배(직전 사업연도 이익 기준), {yrs} 중 하위 {p:.0f}%"
         loss = sum(1 for f in fund if not f[1] or f[1] <= 0) / len(fund)
         if pts and ex.get("ni_loss"):
             pts, note = 0, note + " → 최근 분기 순손실이라 인정 안 함(PER은 지난 연간 이익 기준)"
@@ -536,6 +536,9 @@ def sig_E(W, fund, ex=None):
             pts, note = 0, note + f" → 이력의 {loss:.0%}가 적자 구간이라 인정 안 함"
         elif pts and short_hist:
             pts, note = pts * 0.5, note + " → 이력 3년 미만이라 절반"
+        nv = ex.get("nv") or {}
+        if nv.get("per") and per and abs(nv["per"] / per - 1) > 0.3:
+            note += f" / 최근 4개 분기 기준 {nv['per']:.1f}배" + (f", 추정 {nv['cns_per']:.1f}배" if nv.get("cns_per") else "") + " — 이익이 크게 변해 연간 기준 밴드 판단은 참고만"
         out["E3"] = (r1(pts), note, None)
     else:
         out["E3"] = (0, "적자 또는 PER 없음", None)
