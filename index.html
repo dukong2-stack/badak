@@ -22,11 +22,13 @@
       </div>
     </div>
     <p id="sub" class="sub">불러오는 중…</p>
+    <button id="favnote" class="favnote" hidden></button>
     <nav class="tabs" role="tablist" aria-label="단계">
       <button role="tab" data-tab="3"><b class="st s3">③</b>전환<span class="n" id="n3"></span></button>
       <button role="tab" data-tab="2"><b class="st s2">②</b>바닥<span class="n" id="n2"></span></button>
       <button role="tab" data-tab="1"><b class="st s1">①</b>과매도<span class="n" id="n1"></span></button>
       <button role="tab" data-tab="all">전체</button>
+      <button role="tab" data-tab="fav">★ 관심<span class="n" id="nfav"></span></button>
       <button role="tab" data-tab="rules">기준</button>
     </nav>
   </header>
@@ -46,6 +48,7 @@
       </div>
       <div class="key-strip"></div><ol class="list" id="lall"></ol>
     </section>
+    <section class="pane" data-pane="fav"><p class="lead">상세 화면의 ☆를 눌러 담은 종목입니다. 지난 수집보다 단계가 바뀐 종목이 맨 위에 옵니다. 이 기기에만 저장됩니다.</p><ol class="list" id="lfav"></ol></section>
     <section class="pane rules" data-pane="rules" id="rules"></section>
   </main>
 </div>

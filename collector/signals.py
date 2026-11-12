@@ -390,7 +390,7 @@ def sig_D(x, W, flows, foreign, short):
             bonus = W["D1"] * (0.25 if k >= 3 else 0.125 if k >= 2 else 0)
             what = "전환" if prev < 0 else "지속"
             out["D1"] = (r1(min(W["D1"], base + bonus)),
-                         f"5일 순매수 {s5 / 100:+,.0f}억 ({what}), {k}일 연속", x.n - 1)
+                         f"5일 순매수 {s5 / 100:+,.0f}억 ({what})" + (f", {k}일 연속" if k >= 2 else ""), x.n - 1)
         else:
             out["D1"] = (0, f"5일 순매도 {s5 / 100:,.0f}억", None)
     else:

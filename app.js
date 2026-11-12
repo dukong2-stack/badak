@@ -12,8 +12,37 @@ const CATS = {
 };
 const SHORT = { A: "소진", B: "과매도", C: "패턴", D: "수급", E: "가치", F: "내부자", G: "실적" };
 const STAGE = { 0: "해당 없음", 1: "① 과매도", 2: "② 바닥 형성", 3: "③ 전환 확인" };
-const TABS = ["3", "2", "1", "all", "rules"];
-const S = { tab: "3", D: null, items: [], byCode: {}, max: {}, catMax: {}, div: null };
+const TABS = ["3", "2", "1", "all", "fav", "rules"];
+const S = { tab: "3", D: null, items: [], byCode: {}, max: {}, catMax: {}, div: null, heat: null, ch: null, cur: null };
+
+/* ---------- 관심 종목(이 기기에 저장) ---------- */
+
+const FAV_KEY = "badak.fav";
+function favs() { try { return JSON.parse(localStorage.getItem(FAV_KEY)) || {}; } catch (e) { return {}; } }
+function isFav(code) { return !!favs()[code]; }
+function toggleFav(code, name) {
+  const f = favs();
+  if (f[code]) delete f[code]; else f[code] = { name, at: S.D.meta.asof };
+  try { localStorage.setItem(FAV_KEY, JSON.stringify(f)); } catch (e) { toast("이 기기에서는 관심 종목을 저장할 수 없습니다"); }
+  return !!f[code];
+}
+const changed = (it) => it.prev != null && it.prev !== it.stage;
+const stageMark = (s) => (s ? STAGE[s].slice(0, 1) : "없음");
+
+function renderFav() {
+  const f = favs(), codes = Object.keys(f);
+  const xs = codes.map((c) => S.byCode[c]).filter(Boolean)
+    .sort((a, b) => changed(b) - changed(a) || b.stage - a.stage || b.score - a.score);
+  const gone = codes.filter((c) => !S.byCode[c]);
+  const exc = Object.fromEntries(S.D.meta.excluded.map((e) => [e.code, e.why]));
+  const nCh = xs.filter(changed).length;
+  $("#nfav").textContent = codes.length || "";
+  $("#lfav").innerHTML = (xs.length ? xs.map(card).join("") : codes.length ? "" : `<li class="empty">아직 관심 종목이 없습니다. 종목을 눌러 상세 화면 위쪽의 ☆ 관심을 누르세요.</li>`) +
+    (gone.length ? `<li class="empty">이번 채점에서 빠진 관심 종목: ${gone.map((c) => `${esc(f[c].name)}${exc[c] ? ` (${esc(exc[c])})` : ""} <button data-unfav="${c}">빼기</button>`).join(", ")}</li>` : "");
+  const n = $("#favnote");
+  n.hidden = !nCh;
+  n.textContent = `관심 종목 ${nCh}개 단계가 바뀌었습니다. 보기`;
+}
 
 /* ---------- 목록 ---------- */
 
@@ -62,12 +91,12 @@ function card(it) {
   const pen = it.pen.length ? `<div class="pen">감점 ${fmt(it.pen.reduce((a, p) => a + p[1], 0))} ${it.pen.map((p) => esc(p[0])).join(", ")}</div>` : "";
   const st = it.stage ? `<span class="since s${it.stage}">${sinceText(it, S.D.meta.asof)}</span>` : "";
   return `<li><button class="card" data-code="${it.code}" aria-label="${esc(it.name)} ${fmt(it.score, 1)}점 상세 보기">
-    <div class="row"><div><span class="nm">${esc(it.name)}</span><span class="cd">${it.code}</span></div>
+    <div class="row"><div>${isFav(it.code) ? `<span class="star" aria-label="관심 종목">★</span>` : ""}<span class="nm">${esc(it.name)}</span><span class="cd">${it.code}</span></div>
       <div class="sc">${fmt(it.score, 1)}<small>/100</small></div></div>
     <div class="facts">${st}<span>${fmt(it.close)}원 <span class="${chg}">${it.chg > 0 ? "+" : ""}${fmt(it.chg, 2)}%</span></span>
       <span>60일 저점 +${fmt(it.low60, 1)}%</span><span>시총 ${it.rank}위</span></div>
     ${sounding(it)}
-    <div class="chips">${divChip(it)}${topChips(it)}</div>${pen}
+    <div class="chips">${changed(it) ? `<span class="chg">단계 ${stageMark(it.prev)} → ${stageMark(it.stage)}</span>` : ""}${divChip(it)}${topChips(it)}</div>${pen}
   </button></li>`;
 }
 
@@ -81,6 +110,7 @@ function renderLists() {
   const key = `<div class="sound">${Object.keys(CATS).map((c) => `<span class="seg" style="flex:${S.catMax[c]}"></span>`).join("")}</div><div class="sound-key">${Object.keys(CATS).map((c) => `<span style="flex:${S.catMax[c]}">${SHORT[c]}</span>`).join("")}</div>`;
   $$(".key-strip").forEach((k) => { k.innerHTML = key; k.title = "카드 막대는 왼쪽부터 이 순서, 폭은 배점 비중입니다"; });
   renderAll();
+  renderFav();
 }
 
 function renderAll() {
@@ -104,9 +134,13 @@ async function openDetail(code) {
     const r = await fetch(`data/charts/${code}.json?t=${S.D.meta.updated}`);
     if (!r.ok) throw new Error(r.status);
     const ch = await r.json();
+    S.ch = ch;
     $("#chart-box").innerHTML = chartSvg(ch);
     bindChart(ch);
+    refreshJudge();
+    $("#disc-box").innerHTML = discHtml(ch.disc || []);
   } catch (e) {
+    S.ch = null;
     $("#chart-box").innerHTML = `<p class="empty">차트 자료를 불러오지 못했습니다(${esc(e.message)}). 연결을 확인한 뒤 다시 열어 주세요.</p>`;
   }
 }
@@ -138,16 +172,139 @@ function detailHtml(it) {
   }).join("");
   const pen = it.pen.length ? `<section class="cat penbox"><div class="cat-h"><span>감점</span><small>${fmt(it.pen.reduce((a, p) => a + p[1], 0))} (최대 ${S.D.meta.penalties.cap})</small></div>
     ${it.pen.map((p) => `<div class="sub-i"><span>${esc(p[0])}</span><span class="pt">${p[1]}</span><span class="nt">${esc(p[2])}</span></div>`).join("")}</section>` : "";
-  return `<div class="d-top"><div><h2 id="d-name">${esc(it.name)}</h2><div class="cd">${it.code} · 코스피 시총 ${it.rank}위 · ${fmt(it.mcap / 10000, 1)}조</div>
+  return `<div class="d-top"><div><h2 id="d-name">${esc(it.name)} <button class="favbtn${isFav(it.code) ? " on" : ""}" id="favbtn" aria-pressed="${isFav(it.code)}">${isFav(it.code) ? "★ 관심" : "☆ 관심"}</button></h2><div class="cd">${it.code} · 코스피 시총 ${it.rank}위 · ${fmt(it.mcap / 10000, 1)}조</div>
       <div class="links"><a href="https://finance.naver.com/item/main.naver?code=${it.code}" target="_blank" rel="noopener">네이버 증권</a>
       <a href="https://dart.fss.or.kr/dsab001/main.do?textCrpNm=${encodeURIComponent(it.name)}" target="_blank" rel="noopener">DART 공시</a></div></div>
     <div class="d-score"><div class="sc">${fmt(it.score, 1)}</div><small>100점 중${it.pen.length ? `, 감점 전 ${fmt(it.raw, 1)}` : ""}</small></div></div>
     ${S.div && S.div.map[it.code] ? `<p class="stage-note"><b class="s2">배당가치 노트 후보 ${S.div.map[it.code].rank}위</b> (배당 점수 ${fmt(S.div.map[it.code].score, 1)}, 시가배당률 ${fmt(S.div.map[it.code].yld, 2)}%) <a href="../divnote/" target="_blank" rel="noopener">배당가치 노트 열기</a></p>` : ""}
     <div class="steps">${[1, 2, 3].map((s) => `<div class="k${s}${it.stage >= s ? " on" : ""}">${STAGE[s]}</div>`).join("")}</div>
     <p class="stage-note">${it.stage ? `<b>${sinceText(it, S.D.meta.asof)}.</b> ` : ""}${stageNote}</p>
+    ${judgeHtml(it)}
     ${sounding(it, true)}
     <div class="chart" id="chart-box"><p class="empty">차트를 불러오는 중…</p></div>
-    ${pen}${cats}`;
+    <section class="cat ana"><div class="cat-h"><span>추가 분석</span></div>
+      <p class="stage-note">아래 버튼으로 이 종목의 점수·신호·가격대·최근 공시를 담은 요청 문구를 복사해 Claude 채팅에 붙여넣으면, 기사와 증권사 리포트를 찾아 판정 기준이 맞는지 검토하고 종합 의견을 정리해 줍니다.</p>
+      <div class="btns"><button class="btn pri" id="copyPrompt">분석 요청 문구 복사</button>
+        <a class="btn" href="https://claude.ai/new" target="_blank" rel="noopener">Claude 열기</a>
+        <a class="btn" href="https://search.naver.com/search.naver?where=news&sort=1&query=${encodeURIComponent(it.name)}" target="_blank" rel="noopener">최신 기사</a>
+        <a class="btn" href="https://finance.naver.com/research/company_list.naver?searchType=itemCode&itemCode=${it.code}" target="_blank" rel="noopener">증권사 리포트</a></div></section>
+    ${pen}${cats}
+    <section class="cat" id="disc-box"><div class="cat-h"><span>최근 공시</span><small>불러오는 중…</small></div></section>
+    <p class="stage-note">점수와 의견은 정해진 규칙으로 계산한 참고 자료입니다. 매매 판단은 직접 확인한 뒤 내리세요.</p>`;
+}
+
+/* ---------- 종합 판단·추가 분석·공시 ---------- */
+
+function opinion(it) {
+  const pen = it.pen.reduce((a, p) => a + p[1], 0);
+  if (pen <= -15) return ["회피 검토", "bad", `감점 사유(${it.pen.map((p) => p[0]).join(", ")})가 바닥 신호보다 무겁습니다.`];
+  if (it.stage === 3 && it.score >= 50) return ["매수 검토", "good", "전환이 확인됐고 점수도 높습니다. 손절선을 정하고 나눠서 들어가는 것을 검토할 만합니다."];
+  if (it.stage === 3) return ["분할 매수 검토", "good", "전환은 확인됐지만 점수가 아주 높지는 않습니다. 소량으로 시작해 추가 확인 후 늘리는 방식이 맞습니다."];
+  if (it.stage === 2 && it.score >= 50) return ["분할 매수 검토", "good", "바닥을 다지는 중이고 점수가 높습니다. 저점 근처 소량 매수 후 ③ 전환을 확인하며 늘리는 방식입니다."];
+  if (it.stage === 2) return ["관심", "mid", "바닥을 다지는 중입니다. ③ 전환(패턴 돌파·20일선 회복+순매수)을 기다리는 편이 안전합니다."];
+  if (it.stage === 1) return ["관망", "mid", "아직 과매도 구간입니다. 신저가가 멈추고 매도가 마르는지 확인이 먼저입니다."];
+  return ["해당 없음", "mid", "바닥 신호가 약해 이 앱 기준으로는 매수 근거가 부족합니다."];
+}
+
+function judgeHtml(it) {
+  const [label, tone, why] = opinion(it);
+  const ratio = (c) => (it.cats[c] || 0) / S.catMax[c];
+  const coll = Object.keys(CATS).filter((c) => Object.entries(it.subs).some(([k, s]) => k[0] === c && s[0] != null));
+  const strong = coll.filter((c) => ratio(c) >= 0.5).map((c) => `${CATS[c]} ${fmt(it.cats[c], 1)}/${S.catMax[c]}`);
+  const weak = coll.filter((c) => ratio(c) < 0.2).map((c) => CATS[c]);
+  const notes = [];
+  if (S.heat && S.heat.hot > S.heat.cold) notes.push(`증시 온도계가 과열 쪽(과열 ${S.heat.hot}, 냉각 ${S.heat.cold})이라 비중을 평소보다 낮게 보는 편이 맞습니다.`);
+  if (S.heat && S.heat.cold >= 4) notes.push(`시장 전체가 냉각 국면(냉각 ${S.heat.cold}/${S.heat.n})입니다. 개별 종목 신호가 시장 하락에 묻힐 수 있으니 시장 바닥 확인을 함께 보세요.`);
+  if (S.div && S.div.map[it.code]) notes.push(`배당가치 노트 후보 ${S.div.map[it.code].rank}위라 하방을 배당이 받쳐 줄 가능성이 있습니다.`);
+  return `<section class="cat judge j-${tone}" id="judge"><div class="cat-h"><span>종합 판단 <small>앱 규칙 기준, 참고용</small></span><b class="op">${label}</b></div>
+    <p class="why">${why}</p>
+    ${strong.length ? `<p class="kv"><b>강한 근거</b> ${strong.join(", ")}</p>` : ""}
+    ${weak.length ? `<p class="kv"><b>약한 부분</b> ${weak.join(", ")}</p>` : ""}
+    ${notes.map((n) => `<p class="kv">${n}</p>`).join("")}
+    <div id="levels"></div></section>`;
+}
+
+function refreshJudge() {
+  const box = $("#judge"), code = location.hash.slice(1), it = S.byCode[code];
+  if (!box || !it || $("#sheet").hidden) return;
+  box.outerHTML = judgeHtml(it);
+  if (S.ch && S.ch.code === code) $("#levels").innerHTML = levelsHtml(it, S.ch);
+}
+
+function levels(ch) {
+  const n = ch.c.length, last = ch.c[n - 1];
+  const lo60 = Math.min(...ch.l.slice(-60)), hi120 = Math.max(...ch.h);
+  const pick = (a) => { for (let i = a.length - 1; i >= 0; i--) if (a[i] != null) return a[i]; return null; };
+  return { last, lo60, ma20: pick(ch.ma20), ma60: pick(ch.ma60), hi120 };
+}
+
+function levelsHtml(it, ch) {
+  const L = levels(ch), d = (v) => (v == null ? "" : ` <small>(${v >= L.last ? "+" : ""}${fmt((v / L.last - 1) * 100, 1)}%)</small>`);
+  return `<table class="lv"><tbody>
+    <tr><td>손절 참고선 <small>60일 최저가</small></td><td>${fmt(L.lo60)}원${d(L.lo60)}</td></tr>
+    <tr><td>20일선</td><td>${fmt(L.ma20)}원${d(L.ma20)}</td></tr>
+    <tr><td>60일선 <small>1차 저항</small></td><td>${fmt(L.ma60)}원${d(L.ma60)}</td></tr>
+    <tr><td>120일 고점 <small>회복 목표</small></td><td>${fmt(L.hi120)}원${d(L.hi120)}</td></tr>
+  </tbody></table>
+  <p class="kv">60일 최저가를 종가로 깨면 바닥 판단이 무효가 됩니다. 손실 폭 ${fmt((1 - L.lo60 / L.last) * 100, 1)}% 대비 120일 고점까지 회복 여력 ${fmt((L.hi120 / L.last - 1) * 100, 1)}%입니다.</p>`;
+}
+
+function discHtml(d) {
+  const f = (x) => (x ? `${x.slice(2, 4)}.${x.slice(4, 6)}.${x.slice(6, 8)}` : "");
+  if (!d.length) return `<div class="cat-h"><span>최근 공시</span><small>90일, 0건</small></div><p class="stage-note">최근 90일 공시가 없거나 아직 수집 전입니다.</p>`;
+  return `<div class="cat-h"><span>최근 공시</span><small>90일, ${d.length}건</small></div><ul class="disc">${d.slice(0, 15).map((x) => `<li>
+    <a href="https://dart.fss.or.kr/dsaf001/main.do?rcpNo=${x.no}" target="_blank" rel="noopener">${esc(x.t)}</a>${(x.f || []).map((t) => `<span class="fl bad">${esc(t)}</span>`).join("")}${(x.g || []).map((t) => `<span class="fl good">${esc(t)}</span>`).join("")}
+    <small>${f(x.d)} ${esc(x.by || "")}</small></li>`).join("")}</ul>
+    ${d.length > 15 ? `<p class="stage-note">최근 15건만 표시합니다. 나머지는 DART에서 확인하세요.</p>` : ""}`;
+}
+
+function promptText(it) {
+  const m = S.D.meta, names = m.items, [label] = opinion(it), ch = S.ch;
+  const lit = Object.entries(it.subs).filter(([, s]) => s[0] > 0).map(([k, s]) => `${names[k][1]}(${fmt(s[0], 1)}/${S.max[k]}): ${s[1]}`);
+  const cats = Object.keys(CATS).map((c) => `${CATS[c]} ${fmt(it.cats[c] || 0, 1)}/${S.catMax[c]}`).join(", ");
+  const val = ["E1", "E2", "E3", "G1", "G2", "D1", "D3", "D4"].filter((k) => it.subs[k] && !(it.subs[k][0] > 0)).map((k) => `${names[k][1]}: ${it.subs[k][1]}`);
+  const L = ch ? levels(ch) : null;
+  const disc = ch && ch.disc ? ch.disc.slice(0, 10).map((x) => `${x.d} ${x.t}`) : [];
+  const lines = [
+    `${it.name}(${it.code}) 매수 판단을 위해 추가 분석해 줘.`,
+    ``,
+    `[바닥 신호 앱 수치, ${m.asof} 종가 기준]`,
+    `현재가 ${fmt(it.close)}원, 시가총액 ${fmt(it.mcap / 10000, 1)}조 원(코스피 ${it.rank}위), 120일 고점 대비 ${fmt(it.hi120, 1)}%, 60일 저점 대비 +${fmt(it.low60, 1)}%`,
+    `단계: ${STAGE[it.stage]}${it.stage ? ` (${sinceText(it, m.asof)})` : ""}, 바닥 점수 ${fmt(it.score, 1)}/100 (${cats})`,
+    `앱 규칙 의견: ${label}`,
+    lit.length ? `켜진 신호: ${lit.join(" / ")}` : `켜진 신호: 없음`,
+    val.length ? `점수 없는 가치·실적·수급 항목: ${val.join(" / ")}` : null,
+    it.pen.length ? `감점: ${it.pen.map((p) => `${p[0]} ${p[1]} (${p[2]})`).join(" / ")}` : null,
+    L ? `가격대: 60일 최저가 ${fmt(L.lo60)}원, 20일선 ${fmt(L.ma20)}원, 60일선 ${fmt(L.ma60)}원, 120일 고점 ${fmt(L.hi120)}원` : null,
+    S.heat ? `시장 국면(증시 온도계): 과열 지표 ${S.heat.hot}개, 냉각 지표 ${S.heat.cold}개 / ${S.heat.n}개` : null,
+    S.div && S.div.map[it.code] ? `배당가치 노트 후보 ${S.div.map[it.code].rank}위 (시가배당률 ${fmt(S.div.map[it.code].yld, 2)}%)` : null,
+    disc.length ? `최근 공시: ${disc.join(" / ")}` : null,
+    ``,
+    `판정 기준: 매도 소진, RSI·MACD 과매도와 다이버전스, 이중바닥·N자 돌파, 외국인·기관 순매수와 공매도 잔고, PBR·PER·배당 5년 밴드, 내부자·자사주, 분기 영업이익 변화로 점수를 매긴 결과야.`,
+    `웹에서 최근 기사, 증권사 리포트, 공시를 찾아보고 아래를 정리해 줘.`,
+    `1. 이번 하락의 원인: 시장 전체 영향인지, 업종 문제인지, 회사 고유 문제인지`,
+    `2. 위 판정 기준이 이 종목에 적합한지: 업종 특성상 맞지 않는 지표, 앱이 놓친 위험이나 과대평가한 신호`,
+    `3. 최근 실적 흐름과 올해·내년 컨센서스, 실적 바닥 여부`,
+    `4. 최근 공시와 기사의 특이사항 (증자·사채, 대주주 지분 변동, 소송, 지배구조, 자사주·배당 정책)`,
+    `5. 증권사 리포트의 투자의견·목표주가 변화와 주요 논점`,
+    `6. 수급: 외국인·기관 매매 흐름과 공매도·신용 상황`,
+    `7. 매수 의견: 매수 검토 / 분할 매수 / 관망 / 회피 중 하나와 핵심 근거, 반대 근거, 진입 조건, 손절 기준, 목표 구간`,
+    `8. 마지막에 3줄 요약 (의견, 핵심 이유, 다음에 확인할 것)`,
+  ];
+  return lines.filter((x) => x !== null).join("\n");
+}
+
+async function copyPrompt(it) {
+  const t = promptText(it);
+  try { await navigator.clipboard.writeText(t); toast("복사했습니다. Claude 채팅에 붙여넣으세요"); }
+  catch (e) { window.prompt("아래 문구를 길게 눌러 복사하세요", t); }
+}
+
+function toast(msg) {
+  let t = $("#toast");
+  if (!t) { t = document.createElement("div"); t.id = "toast"; t.className = "toast"; document.body.appendChild(t); }
+  t.textContent = msg; t.classList.add("on");
+  clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("on"), 2200);
 }
 
 /* ---------- 차트 ---------- */
@@ -316,6 +473,7 @@ function showDiv() {
   b.title = `배당가치 노트 후보 ${S.div.total}종목 중 이 앱에서 채점된 종목`;
   b.hidden = false;
   renderLists();
+  refreshJudge();
 }
 
 function openOverlap() {
@@ -343,11 +501,13 @@ async function heatBadge() {
     const sig = Heat.signals(Heat.prep(await r.json()));
     const valid = sig.filter((s) => s.s !== "none"), hot = sig.filter((s) => s.s === "hot").length, cold = sig.filter((s) => s.s === "cold").length;
     if (!valid.length) return;
+    S.heat = { hot, cold, n: valid.length };
     const a = $("#heat");
     a.innerHTML = `<i></i>시장 과열 ${hot}, 냉각 ${cold} / ${valid.length}`;
     a.dataset.s = hot > cold ? "hot" : cold > hot ? "cold" : "mid";
     a.title = "증시 온도계 지표: " + valid.map((s) => `${s.name} ${({ hot: "과열", cold: "냉각", mid: "중립" })[s.s]}`).join(", ");
     a.hidden = false;
+    refreshJudge();
   } catch (e) { /* 온도계가 없으면 표시하지 않음 */ }
 }
 
@@ -462,10 +622,25 @@ $("#main").addEventListener("click", (e) => {
   const g = e.target.closest("[data-go]"); if (g) setTab(g.dataset.go);
 });
 $("#q").addEventListener("input", renderAll);
+$("#favnote").addEventListener("click", () => setTab("fav"));
+$("#main").addEventListener("click", (e) => {
+  const u = e.target.closest("[data-unfav]");
+  if (u) { const f = favs(); delete f[u.dataset.unfav]; try { localStorage.setItem(FAV_KEY, JSON.stringify(f)); } catch (x) { /* 저장 불가 */ } renderFav(); }
+});
 $("#sort").addEventListener("change", renderAll);
 $("#close").addEventListener("click", () => closeDetail());
 $("#divbtn").addEventListener("click", openOverlap);
 $("#detail").addEventListener("click", (e) => {
+  if (e.target.closest("#favbtn")) {
+    const code = location.hash.slice(1), it = S.byCode[code];
+    if (!it) return;
+    const on = toggleFav(code, it.name), b = $("#favbtn");
+    b.classList.toggle("on", on); b.setAttribute("aria-pressed", on); b.textContent = on ? "★ 관심" : "☆ 관심";
+    toast(on ? "관심 종목에 담았습니다" : "관심 종목에서 뺐습니다");
+    renderLists();
+    return;
+  }
+  if (e.target.closest("#copyPrompt")) { const code = location.hash.slice(1); if (S.byCode[code]) copyPrompt(S.byCode[code]); return; }
   const c = e.target.closest(".card");
   if (c) { history.replaceState(null, "", location.pathname); openDetail(c.dataset.code); }
 });

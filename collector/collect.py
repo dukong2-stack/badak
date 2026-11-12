@@ -551,6 +551,26 @@ def disclosures(today):
     return cache["rows"]
 
 
+GOOD = {"buyback": "자사주 취득", "retire": "소각"}
+BAD = {"dilution": "증자·사채", "legal": "소송·횡령", "unfaithful": "불성실공시"}
+BAD_WORDS = ("최대주주변경", "감자결정", "관리종목", "상장폐지", "영업정지", "회생절차", "부도", "감사의견")
+
+
+def recent_disc(corp, today, days=90):
+    """종목별 최근 공시(정정 포함 그대로) — 상세 화면 표시용"""
+    j = dart("list.json", {"corp_code": corp, "bgn_de": (today - dt.timedelta(days=days)).strftime("%Y%m%d"),
+                           "end_de": today.strftime("%Y%m%d"), "page_count": 40})
+    out = []
+    for it in (j or {}).get("list", []):
+        nm = re.sub(r"\s+", " ", it.get("report_nm", "")).strip()
+        k = kind_of(re.sub(r"^\[[^\]]*\]\s*", "", nm))  # 정정 공시도 표시는 원래 종류대로
+        f = [BAD[k]] if k in BAD else []
+        f += [w for w in BAD_WORDS if w in nm.replace(" ", "")][:1]
+        g = [GOOD[k]] if k in GOOD else []
+        out.append({"d": it.get("rcept_dt", ""), "t": nm, "no": it.get("rcept_no", ""), "by": it.get("flr_nm", ""), "f": f, "g": g})
+    return out
+
+
 INSTITUTION = re.compile(r"연금|공제회|자산운용|투자|증권|은행|보험|캐피탈|신탁|펀드|Fund|FUND|Capital|CAPITAL|Management|BlackRock|Vanguard|Norges|Government|GIC", re.I)
 
 
@@ -758,11 +778,20 @@ def main():
             "low60": round((x.c[-1] / low60 - 1) * 100, 1),
             "hi120": round((x.c[-1] / max(x.h[-120:]) - 1) * 100, 1),
             "score": res["score"], "raw": res["raw"], "stage": res["stage"], "since": since,
+            "prev": h[-2][1] if len(h) >= 2 else None,
             "cats": cats,
             "subs": {k: [v[0], v[1]] for k, v in res["subs"].items()},
             "pen": [list(p) for p in res["pen"]],
         })
-        write_chart(code, name, x, res)
+        disc = []
+        if corp and DART_KEY:
+            try:
+                disc = recent_disc(corp, today)
+            except SystemExit as e:
+                err("OpenDART 최근 공시", e)
+            except Exception as e:  # noqa: BLE001
+                err(f"최근 공시 {name}", e)
+        write_chart(code, name, x, res, disc)
 
     save("stage_hist", {k: v for k, v in stage_hist.items() if any(i["code"] == k for i in items)})
     items.sort(key=lambda i: -i["score"])
@@ -780,7 +809,7 @@ def main():
     log(f"완료: 후보 {len(base)} → 채점 {len(items)} (제외 {len(excluded)}), 호출 {CALLS}, 오류 {len(ERRORS)}건")
 
 
-def write_chart(code, name, x, res):
+def write_chart(code, name, x, res, disc=None):
     n = min(120, x.n)
     s = slice(x.n - n, x.n)
     rd = lambda a, k=0: [None if v is None else round(v, k) for v in a[s]]
@@ -790,7 +819,7 @@ def write_chart(code, name, x, res):
             marks.append([pos - (x.n - n), k])
     write(CHARTS / f"{code}.json", {
         "code": code, "name": name, "d": x.d[s], "o": rd(x.o), "h": rd(x.h), "l": rd(x.l), "c": rd(x.c),
-        "v": rd(x.v), "ma20": rd(x.ma20), "ma60": rd(x.ma60), "bb": rd(x.bb), "rsi": rd(x.rsi, 1), "marks": marks,
+        "v": rd(x.v), "ma20": rd(x.ma20), "ma60": rd(x.ma60), "bb": rd(x.bb), "rsi": rd(x.rsi, 1), "marks": marks, "disc": disc or [],
     })
 
 
