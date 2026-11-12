@@ -612,10 +612,10 @@ def read_doc(no):
 def parse_prelim(txt):
     """공정공시 표에서 [당해실적, 전기, 전기대비%, 전년동기, 전년동기대비%] 행을 읽어
     (영업이익 당기, 전년동기, 전기, 당기순이익 당기) 원 단위로. 영업이익을 못 읽으면 None"""
-    mu = re.search(r"단위\s*[:：]?\s*(억원|백만원|천원|원)", re.sub(r"<[^>]+>", " ", txt))
+    mu = re.search(r"단위\s*[:：]?\s*(조원|십억원|억원|백만원|천원|원)", re.sub(r"<[^>]+>", " ", txt))
     if not mu:
         return None
-    unit = {"억원": 1e8, "백만원": 1e6, "천원": 1e3, "원": 1}[mu.group(1)]
+    unit = {"조원": 1e12, "십억원": 1e9, "억원": 1e8, "백만원": 1e6, "천원": 1e3, "원": 1}[mu.group(1)]
     found = {}
     for row in re.findall(r"<TR[^>]*>(.*?)</TR>", txt, re.S | re.I):
         cells = [re.sub(r"<[^>]+>", "", c).replace("&nbsp;", " ").replace("△", "-").replace("▲", "-").strip()
@@ -632,12 +632,20 @@ def parse_prelim(txt):
         if rest and "당해" in rest[0].replace(" ", ""):
             rest = rest[1:]
         n = [num(c) for c in rest]
-        if len(n) < 5 or n[0] is None:
+        # 거래소 서식: [당기, 전기, 전기대비%, 흑자적자전환, 전년동기, 전년동기대비%, 흑자적자전환]
+        # 옛 서식: [당기, 전기, 전기대비%, 전년동기, 전년동기대비%]
+        if len(n) >= 7:
+            cur, pq, py, yoy = n[0], n[1], n[4], n[5]
+        elif len(n) >= 5:
+            cur, pq, py, yoy = n[0], n[1], n[3], n[4]
+        else:
             continue
-        if n[4] is not None and n[3]:
-            if abs((n[0] - n[3]) / abs(n[3]) * 100 - n[4]) > 2:  # 열이 어긋났으면 쓰지 않음
+        if cur is None or py is None:
+            continue
+        if yoy is not None and py:
+            if abs((cur - py) / abs(py) * 100 - yoy) > 2:  # 열이 어긋났으면 쓰지 않음
                 continue
-        found[key] = [v * unit if v is not None else None for v in (n[0], n[3], n[1])]
+        found[key] = [v * unit if v is not None else None for v in (cur, py, pq)]
     op = found.get("op")
     if not op or op[1] is None:
         return None
@@ -665,8 +673,19 @@ NPAGE = {}
 
 def naver_page(code):
     if code not in NPAGE:
-        r = naver_get("https://finance.naver.com/item/main.naver", {"code": code})
-        NPAGE[code] = r.content.decode("euc-kr", errors="replace")
+        try:
+            r = naver_get("https://finance.naver.com/item/main.naver", {"code": code})
+            NPAGE[code] = r.content.decode("euc-kr", errors="replace")
+        except Exception as e:  # noqa: BLE001
+            NPAGE[code] = ""
+            if not NAVER_SAMPLE.get("err"):
+                NAVER_SAMPLE["err"] = True
+                DEBUG.mkdir(parents=True, exist_ok=True)
+                (DEBUG / "naver_error.txt").write_text(f"{code}: {e}", encoding="utf-8")
+        if NPAGE[code] and "cop_analysis" not in NPAGE[code] and not NAVER_SAMPLE.get("odd"):
+            NAVER_SAMPLE["odd"] = True
+            DEBUG.mkdir(parents=True, exist_ok=True)
+            (DEBUG / "naver_page_sample.html").write_text(NPAGE[code][:30000], encoding="utf-8")
         time.sleep(0.1)
     return NPAGE[code]
 
