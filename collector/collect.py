@@ -594,6 +594,8 @@ def quarter_of(d):
 
 def read_doc(no):
     raw = dart("document.xml", {"rcept_no": no}, raw=True)
+    if not raw or raw[:2] != b"PK":
+        raise RuntimeError("압축 파일이 아님: " + (raw or b"")[:300].decode("utf-8", "replace"))
     z = zipfile.ZipFile(io.BytesIO(raw))
     txt = ""
     for nm in z.namelist():
@@ -642,7 +644,69 @@ def parse_prelim(txt):
     return [op[0], op[1], op[2], (found.get("ni") or [None])[0]]
 
 
-def add_prelim(q, disc, cache):
+DEBUG = DATA / "cache" / "debug"
+DIAG = {"doc_fail": 0, "naver_used": 0, "naver_fail": 0, "samples": 0}
+
+
+def save_sample(name, text):
+    """형식 확인용 원문 일부를 저장(최대 3건)"""
+    if DIAG["samples"] >= 3:
+        return
+    DEBUG.mkdir(parents=True, exist_ok=True)
+    (DEBUG / name).write_text(text[:30000], encoding="utf-8")
+    DIAG["samples"] += 1
+
+
+NAVER_SAMPLE = {"done": False}
+
+
+def naver_quarters(code):
+    """네이버 종목 화면 '기업실적분석' 표의 분기 실적 → {(연, 분기): (영업이익, 순이익)} 원 단위(실적만, 추정 제외)"""
+    r = naver_get("https://finance.naver.com/item/main.naver", {"code": code})
+    html = r.content.decode("euc-kr", errors="replace")
+    m = re.search(r'class="section cop_analysis".*?<table[^>]*>(.*?)</table>', html, re.S)
+    if not m:
+        return {}
+    if not NAVER_SAMPLE["done"]:
+        DEBUG.mkdir(parents=True, exist_ok=True)
+        (DEBUG / "naver_cop_analysis.html").write_text(m.group(0)[:30000], encoding="utf-8")
+        NAVER_SAMPLE["done"] = True
+    cells = lambda row: [re.sub(r"<[^>]+>", "", c).replace("&nbsp;", " ").strip()
+                         for c in re.findall(r"<t[hd][^>]*>(.*?)</t[hd]>", row, re.S | re.I)]
+    rows = re.findall(r"<tr[^>]*>(.*?)</tr>", m.group(1), re.S | re.I)
+    heads = None
+    for row in rows[:3]:
+        hs = [re.sub(r"\s+", "", h) for h in cells(row)]
+        if sum(1 for h in hs if re.match(r"\d{4}\.\d{2}", h)) >= 6:
+            heads = hs
+            break
+    if not heads:
+        return {}
+    cols = [(j, h) for j, h in enumerate(heads) if re.match(r"\d{4}\.\d{2}", h)]
+    qcols = cols[4:]  # 앞 4개는 연간
+    vals = {}
+    for row in rows:
+        cs = cells(row)
+        if len(cs) < 5:
+            continue
+        lab = cs[0].replace(" ", "")
+        key = "op" if lab == "영업이익" else "ni" if lab == "당기순이익" else None
+        if key and key not in vals:
+            vals[key] = cs[1:]
+    out = {}
+    for j, h in qcols:
+        if "(E)" in h:
+            continue
+        y, mth = int(h[:4]), int(h[5:7])
+        k = (y, (mth - 1) // 3 + 1)
+        op = num(vals.get("op", [None] * 20)[j]) if "op" in vals and j < len(vals["op"]) else None
+        ni = num(vals.get("ni", [None] * 20)[j]) if "ni" in vals and j < len(vals["ni"]) else None
+        if op is not None:
+            out[k] = (op * 1e8, ni * 1e8 if ni is not None else None)
+    return out
+
+
+def add_prelim(q, disc, cache, code=None):
     """분기보고서보다 새 잠정실적이 있으면 덧붙임. 반환 (분기 목록, 최근 분기 순이익 또는 None).
     못 읽으면 ('라벨', 'pending', None)"""
     pre = [x for x in disc if any(p in flat(x["t"]) for p in PRELIM)]
@@ -655,13 +719,33 @@ def add_prelim(q, disc, cache):
         if (2000 + int(lab[:2]), int(lab[3])) >= (yy, qq):
             return q, None
     label = f"{str(yy)[2:]}.{qq}Q 잠정"
-    if x["no"] not in cache or (cache[x["no"]] and len(cache[x["no"]]) < 4):
+    if not cache.get(x["no"]) or len(cache[x["no"]]) < 4:
+        cache.pop(x["no"], None)
+        txt = ""
         try:
-            cache[x["no"]] = parse_prelim(read_doc(x["no"]))
+            txt = read_doc(x["no"])
+            v = parse_prelim(txt)
         except Exception as e:  # noqa: BLE001
-            log(f"  잠정실적 읽기 실패 {x['no']}: {e}")
-            cache[x["no"]] = None
-    v = cache[x["no"]]
+            v = None
+            txt = txt or f"[읽기 오류] {e}"
+        if v:
+            cache[x["no"]] = v
+        else:
+            DIAG["doc_fail"] += 1
+            save_sample(f"prelim_{x['no']}.txt", txt)
+    v = cache.get(x["no"])
+    if not v and code:  # 네이버 분기 실적표로 대체
+        try:
+            nq = naver_quarters(code)
+            cur, prv, pq = nq.get((yy, qq)), nq.get((yy - 1, qq)), nq.get((yy, qq - 1) if qq > 1 else (yy - 1, 4))
+            if cur and prv:
+                v = [cur[0], prv[0], pq[0] if pq else None, cur[1]]
+                label = f"{str(yy)[2:]}.{qq}Q 잠정(네이버)"
+                DIAG["naver_used"] += 1
+            else:
+                DIAG["naver_fail"] += 1
+        except Exception:  # noqa: BLE001
+            DIAG["naver_fail"] += 1
     if not v:
         return (q or [])[-1:] + [(label, "pending", None)], None
     return (q or [])[-1:] + [(label, v[0], v[1], v[2])], v[3]
@@ -892,7 +976,7 @@ def main():
         q = quarters_for(corp, fins, qkeys) if corp else []
         ni_q = None
         if disc:
-            q, ni_q = add_prelim(q, disc, prelim)
+            q, ni_q = add_prelim(q, disc, prelim, code)
         if ni_q is None and corp:
             for yy, rc, _, _ in qkeys:
                 v = (fins.get((yy, rc), {}).get(corp, {}).get("ni") or [None])[0]
@@ -960,11 +1044,13 @@ def main():
                             "names": [o["name"] for o in sorted(g, key=lambda o: -o["mcap"])[:4] if o is not it][:3]}
     items.sort(key=lambda i: -i["score"])
     na = {k: True for k in ("D1", "D3", "D4", "E1", "F1", "G1") if items and all(i["subs"][k][0] is None for i in items)}
+    if DIAG["doc_fail"]:
+        ERRORS.append(f"잠정실적 원문 읽기 실패 {DIAG['doc_fail']}건(네이버로 대체 {DIAG['naver_used']}건, 대체 실패 {DIAG['naver_fail']}건) — data/cache/debug 확인")
     out = {
         "meta": {
             "updated": NOW.strftime("%Y-%m-%d %H:%M"), "asof": f"{asof[:4]}-{asof[4:6]}-{asof[6:]}",
             "universe": len(base), "scored": len(items), "excluded": excluded, "errors": ERRORS,
-            "calls": CALLS, "weights": W, "penalties": P, "valid_days": V, "universe_cfg": UCFG, "na": na,
+            "calls": CALLS, "weights": W, "diag": DIAG, "penalties": P, "valid_days": V, "universe_cfg": UCFG, "na": na,
             "items": {k: list(v) for k, v in SG.ITEMS.items()},
         },
         "items": items,
