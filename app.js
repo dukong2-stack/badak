@@ -622,6 +622,67 @@ const Heat = (() => {
   return { prep, signals };
 })();
 
+/* ---------- 엑셀 내려받기 ---------- */
+
+function loadXlsx() {
+  if (window.XLSX) return Promise.resolve(window.XLSX);
+  return new Promise((ok, no) => {
+    const s = document.createElement("script");
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+    s.onload = () => ok(window.XLSX);
+    s.onerror = () => no(new Error("엑셀 도구를 불러오지 못했습니다"));
+    document.head.appendChild(s);
+  });
+}
+
+async function exportXlsx() {
+  const b = $("#xlsx");
+  b.disabled = true; b.textContent = "준비 중…";
+  try {
+    const X = await loadXlsx();
+    const m = S.D.meta, names = m.items, f = favs();
+    const lit = (it) => Object.entries(it.subs).filter(([, s]) => s[0] > 0)
+      .sort((a, b2) => b2[1][0] / S.max[b2[0]] - a[1][0] / S.max[a[0]]).map(([k]) => names[k][1]).join(", ");
+    const rows = [...S.items].sort((a, b2) => b2.score - a.score).map((it, i) => ({
+      "순위": i + 1, "종목명": it.name, "코드": it.code, "단계": it.stage ? STAGE[it.stage] : "해당 없음",
+      "단계 진입일": it.stage ? `${it.since.slice(0, 4)}-${it.since.slice(4, 6)}-${it.since.slice(6)}` : "",
+      "바닥 점수": it.score, "감점": it.pen.reduce((a, p) => a + p[1], 0) || 0,
+      ...Object.fromEntries(Object.keys(CATS).map((c) => [`${CATS[c]}(${S.catMax[c]})`, it.cats[c] || 0])),
+      "종가": it.close, "등락률(%)": it.chg, "시가총액(억)": it.mcap, "코스피 시총순위": it.rank,
+      "60일 저점 대비(%)": it.low60, "120일 고점 대비(%)": it.hi120, "52주 고점 대비(%)": it.hi52 ?? "",
+      "1년 전 대비(%)": it.yr1 ?? "", "최근 분기 영업이익 전년비(%)": it.op_yoy ?? "",
+      "PER 최근4분기(네이버)": it.nv?.per ?? "", "추정 PER(네이버)": it.nv?.cns_per ?? "", "PBR(네이버)": it.nv?.pbr ?? "",
+      "배당가치 노트 후보": S.div && S.div.map[it.code] ? `${S.div.map[it.code].rank}위` : "",
+      "관심": f[it.code] ? "★" : "", "주의 공시": (it.warn || []).join(", "),
+      "감점 사유": it.pen.map((p) => `${p[0]}(${p[2]})`).join(", "), "켜진 신호": lit(it),
+    }));
+    const detail = [];
+    for (const it of [...S.items].sort((a, b2) => b2.score - a.score)) {
+      for (const [k, s] of Object.entries(it.subs)) {
+        detail.push({ "종목명": it.name, "코드": it.code, "대분류": CATS[k[0]], "항목": names[k][1],
+          "점수": s[0] == null ? "미수집" : s[0], "배점": S.max[k], "판정 근거": s[1] });
+      }
+    }
+    const ex = m.excluded.map((e) => ({ "종목명": e.name, "코드": e.code, "제외 사유": e.why }));
+    const wb = X.utils.book_new();
+    const add = (data, name, widths) => {
+      const ws = X.utils.json_to_sheet(data);
+      ws["!cols"] = widths.map((w) => ({ wch: w }));
+      if (data.length) ws["!autofilter"] = { ref: ws["!ref"] };
+      X.utils.book_append_sheet(wb, ws, name);
+    };
+    add(rows, "목록", [5, 14, 8, 12, 11, 9, 6, ...Object.keys(CATS).map(() => 9), 10, 8, 10, 8, 9, 9, 9, 9, 10, 9, 9, 8, 10, 4, 30, 30, 50]);
+    add(detail, "세부 항목", [14, 8, 14, 22, 7, 5, 70]);
+    add(ex, "제외 종목", [14, 8, 40]);
+    X.writeFile(wb, `바닥신호_${m.asof}.xlsx`);
+    toast("엑셀 파일을 내려받았습니다");
+  } catch (e) {
+    toast(e.message || "내려받기에 실패했습니다");
+  } finally {
+    b.disabled = false; b.textContent = "엑셀";
+  }
+}
+
 /* ---------- 시작 ---------- */
 
 async function load() {
@@ -656,6 +717,7 @@ $("#main").addEventListener("click", (e) => {
   if (u) { const f = favs(); delete f[u.dataset.unfav]; try { localStorage.setItem(FAV_KEY, JSON.stringify(f)); } catch (x) { /* 저장 불가 */ } renderFav(); }
 });
 $("#sort").addEventListener("change", renderAll);
+$("#xlsx").addEventListener("click", exportXlsx);
 $("#close").addEventListener("click", () => closeDetail());
 $("#divbtn").addEventListener("click", openOverlap);
 $("#detail").addEventListener("click", (e) => {
