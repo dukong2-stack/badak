@@ -129,6 +129,13 @@ def fchart(symbol, count):
     return out
 
 
+def drop_today(t, cut):
+    """장 마감 전(15:40 이전) 수동 실행 시 오늘의 미완성 일봉 제거"""
+    while t["d"] and t["d"][-1] >= cut:
+        for k in "dohlcv":
+            t[k].pop()
+
+
 def universe_naver():
     """코스피 보통주 시가총액 순위. 반환: [{code,name,mcap(억)}]"""
     rows = []
@@ -616,7 +623,7 @@ def parse_prelim(txt):
     if not mu:
         return None
     unit = {"조원": 1e12, "십억원": 1e9, "억원": 1e8, "백만원": 1e6, "천원": 1e3, "원": 1}[mu.group(1)]
-    found = {}
+    found, saw_op = {}, False
     for row in re.findall(r"<TR[^>]*>(.*?)</TR>", txt, re.S | re.I):
         cells = [re.sub(r"<[^>]+>", "", c).replace("&nbsp;", " ").replace("△", "-").replace("▲", "-").strip()
                  for c in re.findall(r"<(?:TD|TE|TH|TU)[^>]*>(.*?)</(?:TD|TE|TH|TU)>", row, re.S | re.I)]
@@ -640,6 +647,8 @@ def parse_prelim(txt):
             cur, pq, py, yoy = n[0], n[1], n[3], n[4]
         else:
             continue
+        if key == "op":
+            saw_op = True
         if cur is None:
             continue
         if yoy is not None and py:
@@ -647,6 +656,8 @@ def parse_prelim(txt):
                 continue
         found[key] = [v * unit if v is not None else None for v in (cur, py, pq)]
     op = found.get("op")
+    if not op and saw_op:
+        return []  # 분기 실적 칸이 비어 있음(월별 실적 공시 등)
     if not op:
         return None
     return [op[0], op[1], op[2], (found.get("ni") or [None])[0]]
@@ -785,7 +796,9 @@ def add_prelim(q, disc, cache, code=None):
     target = quarter_of(pre[0]["d"])
     yy, qq = target
     label = f"{str(yy)[2:]}.{qq}Q 잠정"
-    for x in [p for p in pre if quarter_of(p["d"]) == target]:
+    empty = 0
+    cands = [p for p in pre if quarter_of(p["d"]) == target]
+    for x in cands:
         v = cache.get(x["no"])
         if not v or len(v) < 4:
             txt = ""
@@ -795,6 +808,9 @@ def add_prelim(q, disc, cache, code=None):
             except Exception as e:  # noqa: BLE001
                 v = None
                 txt = txt or f"[읽기 오류] {e}"
+            if v == []:
+                empty += 1
+                continue
             if v:
                 cache[x["no"]] = v
             else:
@@ -804,6 +820,8 @@ def add_prelim(q, disc, cache, code=None):
         if v[1] is None:  # 전년 같은 분기 실적이 없음(신규 상장·합병 등) → 비교 불가, 기존 분기 유지
             return q, None
         return (q or [])[-1:] + [(label, v[0], v[1], v[2])], v[3]
+    if empty == len(cands):
+        return q, None  # 분기 잠정실적이 아닌 월별 공시뿐 → 분기보고서 기준 유지
     return (q or [])[-1:] + [(label, "pending", None)], None
 
 
@@ -861,6 +879,11 @@ def main():
 
     # 1) 코스피 일봉 → 거래일 달력
     kospi_ts = fchart("KOSPI", 1400)
+    if NOW.weekday() < 5 and NOW.hour * 60 + NOW.minute < 15 * 60 + 40:
+        cut = NOW.strftime("%Y%m%d")
+        drop_today(kospi_ts, cut)
+    else:
+        cut = None
     dates = kospi_ts["d"]
     if len(dates) < 300:
         raise SystemExit("[중단] 코스피 지수 일봉을 받지 못했습니다.")
@@ -886,6 +909,8 @@ def main():
     for i, r in enumerate(base):
         try:
             t = fchart(r["code"], 300)
+            if cut:
+                drop_today(t, cut)
             if len(t["c"]) >= 130:
                 ts[r["code"]] = t
         except Exception as e:  # noqa: BLE001
