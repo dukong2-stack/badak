@@ -640,14 +640,14 @@ def parse_prelim(txt):
             cur, pq, py, yoy = n[0], n[1], n[3], n[4]
         else:
             continue
-        if cur is None or py is None:
+        if cur is None:
             continue
         if yoy is not None and py:
             if abs((cur - py) / abs(py) * 100 - yoy) > 2:  # 열이 어긋났으면 쓰지 않음
                 continue
         found[key] = [v * unit if v is not None else None for v in (cur, py, pq)]
     op = found.get("op")
-    if not op or op[1] is None:
+    if not op:
         return None
     return [op[0], op[1], op[2], (found.get("ni") or [None])[0]]
 
@@ -691,17 +691,37 @@ def naver_page(code):
 
 
 def naver_ratios(code):
-    """네이버 투자정보: 최근 4개 분기 기준 PER·EPS, 최근 분기 PBR, 추정 PER"""
+    """네이버 증권 모바일 API: 최근 4개 분기 PER·EPS, 최근 분기 PBR·BPS, 추정 PER·EPS"""
     try:
-        html = naver_page(code)
-    except Exception:  # noqa: BLE001
+        r = naver_get(f"https://m.stock.naver.com/api/stock/{code}/integration")
+        j = r.json()
+    except Exception as e:  # noqa: BLE001
+        if not NAVER_SAMPLE.get("err"):
+            NAVER_SAMPLE["err"] = True
+            DEBUG.mkdir(parents=True, exist_ok=True)
+            (DEBUG / "naver_error.txt").write_text(f"{code}: {e}", encoding="utf-8")
         return {}
+    if not NAVER_SAMPLE.get("api"):
+        NAVER_SAMPLE["api"] = True
+        DEBUG.mkdir(parents=True, exist_ok=True)
+        (DEBUG / "naver_integration.json").write_text(json.dumps(j, ensure_ascii=False)[:30000], encoding="utf-8")
+    want = {"per": "per", "eps": "eps", "pbr": "pbr", "bps": "bps", "cnsper": "cns_per", "cnseps": "cns_eps",
+            "추정per": "cns_per", "추정eps": "cns_eps"}
     out = {}
-    for k, i in (("per", "_per"), ("eps", "_eps"), ("pbr", "_pbr"), ("cns_per", "_cns_per")):
-        m = re.search(r'id="%s"[^>]*>([^<]+)<' % i, html)
-        v = num(m.group(1)) if m else None
-        if v is not None:
-            out[k] = v
+
+    def walk(o):
+        if isinstance(o, dict):
+            k = str(o.get("code") or o.get("key") or "").replace(" ", "").lower()
+            if k in want and "value" in o and want[k] not in out:
+                v = num(re.sub(r"[^0-9.,\-]", "", str(o["value"])))
+                if v is not None:
+                    out[want[k]] = v
+            for v in o.values():
+                walk(v)
+        elif isinstance(o, list):
+            for v in o:
+                walk(v)
+    walk(j)
     return out
 
 
@@ -752,47 +772,39 @@ def naver_quarters(code):
 
 def add_prelim(q, disc, cache, code=None):
     """분기보고서보다 새 잠정실적이 있으면 덧붙임. 반환 (분기 목록, 최근 분기 순이익 또는 None).
-    못 읽으면 ('라벨', 'pending', None)"""
+    같은 분기 공시가 여럿이면 연결 기준을 먼저, 최신부터 읽어 첫 성공값을 씀(월별 판매실적 등은 건너뜀).
+    전부 못 읽으면 ('라벨', 'pending', None)"""
     pre = [x for x in disc if any(p in flat(x["t"]) for p in PRELIM)]
     if not pre:
         return q, None
-    x = max(pre, key=lambda x: x["d"])
-    yy, qq = quarter_of(x["d"])
-    if q:
-        lab = q[-1][0]
-        if (2000 + int(lab[:2]), int(lab[3])) >= (yy, qq):
-            return q, None
+    last_q = (2000 + int(q[-1][0][:2]), int(q[-1][0][3])) if q else (0, 0)
+    pre = [x for x in pre if quarter_of(x["d"]) > last_q and quarter_of(x["d"])[1] != 4]
+    if not pre:
+        return q, None
+    pre.sort(key=lambda x: (quarter_of(x["d"]), "연결" in x["t"], x["d"]), reverse=True)
+    target = quarter_of(pre[0]["d"])
+    yy, qq = target
     label = f"{str(yy)[2:]}.{qq}Q 잠정"
-    if not cache.get(x["no"]) or len(cache[x["no"]]) < 4:
-        cache.pop(x["no"], None)
-        txt = ""
-        try:
-            txt = read_doc(x["no"])
-            v = parse_prelim(txt)
-        except Exception as e:  # noqa: BLE001
-            v = None
-            txt = txt or f"[읽기 오류] {e}"
-        if v:
-            cache[x["no"]] = v
-        else:
-            DIAG["doc_fail"] += 1
-            save_sample(f"prelim_{x['no']}.txt", txt)
-    v = cache.get(x["no"])
-    if not v and code:  # 네이버 분기 실적표로 대체
-        try:
-            nq = naver_quarters(code)
-            cur, prv, pq = nq.get((yy, qq)), nq.get((yy - 1, qq)), nq.get((yy, qq - 1) if qq > 1 else (yy - 1, 4))
-            if cur and prv:
-                v = [cur[0], prv[0], pq[0] if pq else None, cur[1]]
-                label = f"{str(yy)[2:]}.{qq}Q 잠정(네이버)"
-                DIAG["naver_used"] += 1
+    for x in [p for p in pre if quarter_of(p["d"]) == target]:
+        v = cache.get(x["no"])
+        if not v or len(v) < 4:
+            txt = ""
+            try:
+                txt = read_doc(x["no"])
+                v = parse_prelim(txt)
+            except Exception as e:  # noqa: BLE001
+                v = None
+                txt = txt or f"[읽기 오류] {e}"
+            if v:
+                cache[x["no"]] = v
             else:
-                DIAG["naver_fail"] += 1
-        except Exception:  # noqa: BLE001
-            DIAG["naver_fail"] += 1
-    if not v:
-        return (q or [])[-1:] + [(label, "pending", None)], None
-    return (q or [])[-1:] + [(label, v[0], v[1], v[2])], v[3]
+                DIAG["doc_fail"] += 1
+                save_sample(f"prelim_{x['no']}.txt", txt)
+                continue
+        if v[1] is None:  # 전년 같은 분기 실적이 없음(신규 상장·합병 등) → 비교 불가, 기존 분기 유지
+            return q, None
+        return (q or [])[-1:] + [(label, v[0], v[1], v[2])], v[3]
+    return (q or [])[-1:] + [(label, "pending", None)], None
 
 
 def recent_disc(corp, today, days=180):
