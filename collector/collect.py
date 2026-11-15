@@ -28,7 +28,7 @@ ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "data"
 CACHE = DATA / "cache"
 CHARTS = DATA / "charts"
-for p in (DATA, CACHE, CHARTS, CACHE / "fund"):
+for p in (DATA, CACHE, CHARTS, CACHE / "fund", CACHE / "fund2"):
     p.mkdir(parents=True, exist_ok=True)
 
 CFG = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
@@ -129,6 +129,24 @@ def fchart(symbol, count):
     return out
 
 
+def vol_spikes(x, ex):
+    """최근 30거래일 중 거래량이 직전 20거래일 평균의 2배 이상인 날
+    [날짜, 배수, 당일 등락률%, 하락추세(1/0), 사유(실적/급락/없음)]"""
+    out = []
+    for i in range(max(21, x.n - 30), x.n):
+        base = sum(x.v[i - 20:i]) / 20
+        if not base:
+            continue
+        r = x.v[i] / base
+        if r < 2:
+            continue
+        down = (x.ma60[i] is not None and x.c[i] < x.ma60[i]) or x.c[i] / x.c[i - 20] - 1 <= -0.08
+        d = x.d[i]
+        why = SG.event_day(x, i, ex) or ""
+        out.append([d, round(r, 1), round((x.c[i] / x.c[i - 1] - 1) * 100, 1), 1 if down else 0, why])
+    return out
+
+
 def drop_today(t, cut):
     """장 마감 전(15:40 이전) 수동 실행 시 오늘의 미완성 일봉 제거"""
     while t["d"] and t["d"][-1] >= cut:
@@ -136,11 +154,11 @@ def drop_today(t, cut):
             t[k].pop()
 
 
-def universe_naver():
-    """코스피 보통주 시가총액 순위. 반환: [{code,name,mcap(억)}]"""
+def universe_naver(mkt="KOSPI"):
+    """보통주 시가총액 순위. 반환: [{code,name,mcap(억)}]"""
     rows = []
     for page in range(1, 9):
-        r = naver_get("https://m.stock.naver.com/api/stocks/marketValue/KOSPI", {"page": page, "pageSize": 100})
+        r = naver_get(f"https://m.stock.naver.com/api/stocks/marketValue/{mkt}", {"page": page, "pageSize": 100})
         j = r.json()
         items = j.get("stocks") if isinstance(j, dict) else j
         if not items:
@@ -154,10 +172,10 @@ def universe_naver():
                 continue
             if mv > 1e9:  # 원 단위로 오면 억원으로
                 mv /= 1e8
-            rows.append({"code": code, "name": (it.get("stockName") or it.get("itemName") or "").strip(), "mcap": mv})
+            rows.append({"code": code, "name": (it.get("stockName") or it.get("itemName") or "").strip(), "mcap": mv, "mkt": mkt})
         time.sleep(0.2)
     if len(rows) < 400:
-        raise RuntimeError(f"네이버 시가총액 순위가 {len(rows)}종목뿐입니다")
+        raise RuntimeError(f"네이버 {mkt} 시가총액 순위가 {len(rows)}종목뿐입니다")
     rows.sort(key=lambda r: -r["mcap"])
     return rows
 
@@ -171,7 +189,7 @@ def flagged_naver():
         ("투자위험", "https://finance.naver.com/sise/investment_alert.naver", {"type": "risk"}),
     ]
     out = {}
-    for why, url, params in pages:
+    for why, url, params in [(w, u, {**(p or {}), "sosok": so}) for w, u, p in pages for so in ("0", "1")]:
         try:
             r = naver_get(url, params)
             for code in re.findall(r"/item/main\.naver\?code=(\d{6})", r.content.decode("euc-kr", errors="replace")):
@@ -252,39 +270,48 @@ def krx_daily(name, dates, fetch, keep):
     return cache
 
 
+MKTS = ("KOSPI", "KOSDAQ")
+
+
 def krx_flows(st, dates):
     def fetch(d):
         out = {}
-        for inv in ("외국인", "기관합계"):
-            df = krx_call(st.get_market_net_purchases_of_equities, d, d, "KOSPI", inv)
-            if df is None or df.empty:
-                return None
-            c = col(df, "순매수", "대금")
-            for code, v in df[c].items():
-                out[code] = out.get(code, 0) + round(float(v) / 1e6)
+        for mk in MKTS:
+            for inv in ("외국인", "기관합계"):
+                df = krx_call(st.get_market_net_purchases_of_equities, d, d, mk, inv)
+                if df is None or df.empty:
+                    return None
+                c = col(df, "순매수", "대금")
+                for code, v in df[c].items():
+                    out[code] = out.get(code, 0) + round(float(v) / 1e6)
         return out
-    return krx_daily("flows", dates[-30:], fetch, 40)
+    return krx_daily("flows2", dates[-30:], fetch, 40)
 
 
 def krx_foreign(st, dates):
     def fetch(d):
-        df = krx_call(st.get_exhaustion_rates_of_foreign_investment, d, "KOSPI")
-        if df is None or df.empty:
-            return None
-        c = col(df, "지분율")
-        return {code: round(float(v), 2) for code, v in df[c].items() if v == v}
-    return krx_daily("foreign", dates[-62:], fetch, 70)
+        out = {}
+        for mk in MKTS:
+            df = krx_call(st.get_exhaustion_rates_of_foreign_investment, d, mk)
+            if df is None or df.empty:
+                return None
+            c = col(df, "지분율")
+            out.update({code: round(float(v), 2) for code, v in df[c].items() if v == v})
+        return out
+    return krx_daily("foreign2", dates[-62:], fetch, 70)
 
 
 def krx_short(st, dates):
     def fetch(d):
-        df = krx_call(st.get_shorting_balance, d, "KOSPI")
-        if df is None or df.empty:
-            return None
-        c = col(df, "공매도잔고") or col(df, "잔고")
-        m = {code: int(v) for code, v in df[c].items() if v == v}
+        m = {}
+        for mk in MKTS:
+            df = krx_call(st.get_shorting_balance, d, mk)
+            if df is None or df.empty:
+                return None
+            c = col(df, "공매도잔고") or col(df, "잔고")
+            m.update({code: int(v) for code, v in df[c].items() if v == v})
         return m if sum(m.values()) > 0 else None  # 아직 공표 전(T+2)이면 비어 있음
-    return krx_daily("short", dates[-65:], fetch, 70)
+    return krx_daily("short2", dates[-65:], fetch, 70)
 
 
 def krx_fund(st, dates):
@@ -299,14 +326,14 @@ def krx_fund(st, dates):
         by_year.setdefault(d[:4], []).append(d)
     fund, fails = {}, 0
     for y, ds in sorted(by_year.items()):
-        name = f"fund/{y}"
+        name = f"fund2/{y}"
         cache = load(name)
         new = 0
         for d in ds:
             if d in cache or fails >= 3:
                 continue
             try:
-                df = krx_call(st.get_market_fundamental, d, market="KOSPI")
+                df = krx_call(st.get_market_fundamental, d, market="ALL")
             except Exception as e:  # noqa: BLE001
                 fails += 1
                 if fails >= 3:
@@ -530,8 +557,9 @@ def disclosures(today):
     """코스피 주요사항(B)·거래소공시(I) 1년치 중 필요한 종류만. 증분 수집."""
     cache = load("disclosures", {"rows": {}, "last": {}})
     end = today
-    for ty in ("B", "I"):
-        last = cache["last"].get(ty)
+    for ty, cls in (("B", "Y"), ("I", "Y"), ("B", "K"), ("I", "K")):
+        key = ty if cls == "Y" else ty + cls
+        last = cache["last"].get(key)
         start = (dt.date.fromisoformat(last) - dt.timedelta(days=3)) if last else today - dt.timedelta(days=370)
         s = start
         while s <= end:
@@ -539,7 +567,7 @@ def disclosures(today):
             page, total = 1, 1
             while page <= total:
                 j = dart("list.json", {"bgn_de": s.strftime("%Y%m%d"), "end_de": e.strftime("%Y%m%d"),
-                                       "corp_cls": "Y", "pblntf_ty": ty, "page_no": page, "page_count": 100})
+                                       "corp_cls": cls, "pblntf_ty": ty, "page_no": page, "page_count": 100})
                 if not j:
                     break
                 total = int(j.get("total_page") or 1)
@@ -549,9 +577,9 @@ def disclosures(today):
                         cache["rows"][it["rcept_no"]] = {"s": it.get("stock_code", ""), "d": it["rcept_dt"], "k": k,
                                                          "nm": re.sub(r"\s+", " ", it["report_nm"]).strip()}
                 page += 1
-            log(f"  공시({ty}) {s}~{e}: 누적 {len(cache['rows'])}건")
+            log(f"  공시({key}) {s}~{e}: 누적 {len(cache['rows'])}건")
             s = e + dt.timedelta(days=1)
-        cache["last"][ty] = end.isoformat()
+        cache["last"][key] = end.isoformat()
     cut = (today - dt.timedelta(days=400)).strftime("%Y%m%d")
     cache["rows"] = {k: v for k, v in cache["rows"].items() if v["d"] >= cut}
     save("disclosures", cache)
@@ -889,19 +917,35 @@ def main():
         raise SystemExit("[중단] 코스피 지수 일봉을 받지 못했습니다.")
     asof = dates[-1]
     kospi = dict(zip(kospi_ts["d"], kospi_ts["c"]))
+    kosdaq_ts = fchart("KOSDAQ", 400)
+    if cut:
+        drop_today(kosdaq_ts, cut)
+    kosdaq = dict(zip(kosdaq_ts["d"], kosdaq_ts["c"]))
+    IDX = {"KOSPI": kospi, "KOSDAQ": kosdaq}
     dset = set(dates)
     log(f"기준 거래일 {asof}")
 
     # 2) 후보군
-    ranked = universe_naver()
-    base = []
-    excluded = []
-    for r in ranked:
-        if r["code"][-1] != "0" or re.search(r"스팩|리츠|인프라|제\d+호", r["name"]):
+    base, excluded, RANK = [], [], {}
+    for mk, n in (("KOSPI", UCFG["top_n"]), ("KOSDAQ", UCFG.get("top_n_kosdaq", 0))):
+        if not n:
             continue
-        base.append(r)
-        if len(base) >= UCFG["top_n"]:
-            break
+        try:
+            ranked = universe_naver(mk)
+        except Exception as e:  # noqa: BLE001
+            if mk == "KOSPI":
+                raise
+            err("코스닥 시가총액 순위", e)
+            continue
+        k = 0
+        for r in ranked:
+            if r["code"][-1] != "0" or re.search(r"스팩|리츠|인프라|제\d+호", r["name"]):
+                continue
+            k += 1
+            RANK[r["code"]] = k
+            base.append(r)
+            if k >= n:
+                break
     flags = flagged_naver()
 
     # 3) 일봉
@@ -1003,8 +1047,9 @@ def main():
         sector_up[ind] = {d for d, rs in rets.items() if len(rs) >= 3 and sorted(rs)[len(rs) // 2] >= 0.03}
     items, stage_hist = [], load("stage_hist")
     prelim = load("prelim")
-    kd = kospi_ts["d"]
-    crash = {kd[i] for i in range(1, len(kd)) if kospi_ts["c"][i] / kospi_ts["c"][i - 1] - 1 <= -0.03}
+    def crash_days(t):
+        return {t["d"][i] for i in range(1, len(t["d"])) if t["c"][i] / t["c"][i - 1] - 1 <= -0.03}
+    CRASH = {"KOSPI": crash_days(kospi_ts), "KOSDAQ": crash_days(kosdaq_ts)}
     today_s = asof
     for r in base:
         code, name = r["code"], r["name"]
@@ -1017,7 +1062,8 @@ def main():
             why = "일봉 부족(신규상장 등)"
         else:
             tv = sum(c * v for c, v in zip(t["c"][-20:], t["v"][-20:])) / 20 / 1e8
-            if tv < UCFG["min_trading_value_eok"]:
+            mtv = UCFG["min_trading_value_eok"] if r["mkt"] == "KOSPI" else UCFG.get("min_trading_value_eok_kosdaq", UCFG["min_trading_value_eok"])
+            if tv < mtv:
                 why = f"거래대금 부족({tv:,.0f}억)"
         if not why and corp:
             if any(e["k"] == "unfaithful" and SG.days_between(e["d"], today_s) <= 365 for e in events.get(corp, [])):
@@ -1040,7 +1086,7 @@ def main():
                     if cov <= UCFG["min_interest_coverage"]:
                         why = f"이자보상배율 {cov:.1f}배({ie['src']} 기준)"
         if why:
-            excluded.append({"code": code, "name": name, "why": why})
+            excluded.append({"code": code, "name": name, "why": why, "mkt": r["mkt"]})
             continue
 
         disc = []
@@ -1069,14 +1115,14 @@ def main():
         a = fins.get((ay, "11011"), {}).get(corp, {}) if corp else {}
         ni, eq = (a.get("ni") or [None])[0], (a.get("equity") or [None])[0]
         ex = {"earn_days": {x["d"] for x in disc if any(p in flat(x["t"]) for p in EARN)},
-              "crash_days": crash, "mcap": r["mcap"] * 1e8,
+              "crash_days": CRASH[r["mkt"]], "mcap": r["mcap"] * 1e8,
               "ni_loss": ni_q is not None and ni_q < 0,
               "sector_up": sector_up.get((induty.get(corp) or "")[:3], set()) if corp else set(),
               "retire_recent": any(e["k"] == "retire" and 0 <= SG.days_between(e["d"], today_s) <= 60 for e in evs),
               "roe": ni / eq * 100 if ni is not None and eq else None,
               "nv": naver_ratios(code)}
         try:
-            res = SG.score_stock(t, W, P, V, kospi, fl, fr, sh, fu, evs, q, today_s, ex)
+            res = SG.score_stock(t, W, P, V, IDX[r["mkt"]], fl, fr, sh, fu, evs, q, today_s, ex)
         except Exception as e:  # noqa: BLE001
             err(f"점수 {name}", e)
             traceback.print_exc()
@@ -1097,12 +1143,13 @@ def main():
             cat = SG.ITEMS[k][0]
             cats[cat] = round(cats.get(cat, 0) + (pts or 0), 1)
         items.append({
-            "code": code, "name": name, "mcap": round(r["mcap"]), "rank": ranked.index(r) + 1,
+            "code": code, "name": name, "mkt": r["mkt"], "mcap": round(r["mcap"]), "rank": RANK[code],
             "close": x.c[-1], "chg": round((x.c[-1] / x.c[-2] - 1) * 100, 2),
             "nv": ex.get("nv") or {},
             "low60": round((x.c[-1] / low60 - 1) * 100, 1),
             "hi120": round((x.c[-1] / max(x.h[-120:]) - 1) * 100, 1),
             "hi52": round((x.c[-1] / max(x.h[-250:]) - 1) * 100, 1),
+            "vx": vol_spikes(x, ex),
             "yr1": round((x.c[-1] / x.c[-250] - 1) * 100, 1) if x.n >= 250 else None,
             "op_yoy": None if res["op_yoy"] is None else round(res["op_yoy"] * 100),
             "warn": warnings_of(disc, today_s),
@@ -1121,7 +1168,7 @@ def main():
         try:
             cl = {}
             for d in (dates[-2], dates[-1]):
-                df = krx_call(st.get_market_ohlcv, d, market="KOSPI")
+                df = krx_call(st.get_market_ohlcv, d, market="ALL")
                 c = col(df, "종가")
                 cl[d] = {k: float(v) for k, v in df[c].items()} if df is not None and not df.empty and c else {}
             for it in items:
