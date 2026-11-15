@@ -406,8 +406,8 @@ function renderRules() {
   const m = S.D.meta, W = m.weights, U = m.universe_cfg, P = m.penalties;
   const rows = Object.keys(CATS).map((c) => {
     const subs = Object.keys(W).filter((k) => k[0] === c);
-    return `<tr class="cat-row"><td>${CATS[c]}</td><td class="r">${S.catMax[c]}</td></tr>` +
-      subs.map((k) => `<tr><td>${esc(m.items[k][1])}${(m.na[k] || k === "D2") ? " <small class=\"err\">미수집</small>" : ""}</td><td class="r">${W[k]}</td></tr>`).join("");
+    return `<tr class="cat-row"><td>${CATS[c]}</td><td class="r">${S.custom ? `${S.catMax[c]} <small>(기본 ${catMax(W)[c]})</small>` : S.catMax[c]}</td></tr>` +
+      subs.map((k) => `<tr><td>${esc(m.items[k][1])}${(m.na[k] || k === "D2") ? " <small class=\"err\">미수집</small>" : ""}</td><td class="r">${S.max[k]}</td></tr>`).join("");
   }).join("");
   const exByWhy = {};
   for (const e of m.excluded) (exByWhy[e.why.replace(/\(.*\)/, "").replace(/\d.*$/, "").trim()] ||= []).push(e);
@@ -653,6 +653,109 @@ function openTong(name, code) {
   }
 }
 
+/* ---------- 점수 비중 조정(이 기기에 저장) ---------- */
+
+const WKEY = "badak.weights";
+const PRESETS = {
+  "기본": null,
+  "기술 중심": { A: 20, B: 25, C: 20, D: 20, E: 5, F: 5, G: 5 },
+  "수급 중심": { A: 10, B: 15, C: 15, D: 35, E: 10, F: 10, G: 5 },
+  "가치·공시 중심": { A: 10, B: 15, C: 10, D: 15, E: 25, F: 15, G: 10 },
+};
+
+function baseCats() { return catMax(S.D.meta.weights); }
+function savedWeights() { try { return JSON.parse(localStorage.getItem(WKEY)); } catch (e) { return null; } }
+
+function applyWeights(cw) {
+  const m = S.D.meta, W = m.weights, b = baseCats();
+  cw = cw || b;
+  const f = Object.fromEntries(Object.keys(CATS).map((c) => [c, b[c] ? cw[c] / b[c] : 0]));
+  S.max = Object.fromEntries(Object.entries(W).map(([k, w]) => [k, Math.round(w * f[k[0]] * 10) / 10]));
+  S.catMax = { ...cw };
+  const cap = m.penalties.cap;
+  for (const it of S.items) {
+    if (!it._o) it._o = { subs: JSON.parse(JSON.stringify(it.subs)), score: it.score, cats: { ...it.cats } };
+    const cats = {};
+    for (const [k, s0] of Object.entries(it._o.subs)) {
+      const v = s0[0] == null ? null : Math.round(s0[0] * f[k[0]] * 10) / 10;
+      it.subs[k] = [v, s0[1]];
+      cats[k[0]] = Math.round(((cats[k[0]] || 0) + (v || 0)) * 10) / 10;
+    }
+    it.cats = cats;
+    const raw = Object.values(cats).reduce((x, y) => x + y, 0);
+    const pen = Math.max(cap, it.pen.reduce((x, p) => x + p[1], 0));
+    it.raw = Math.round(raw * 10) / 10;
+    it.score = Math.round(Math.max(0, raw + pen) * 10) / 10;
+  }
+  S.custom = !!savedWeights();
+}
+
+function renderWeights() {
+  const cur = { ...S.catMax }, b = baseCats();
+  const sum = () => Object.values(cur).reduce((x, y) => x + (+y || 0), 0);
+  const el = $("#wpanel");
+  el.innerHTML = `<h3>점수 비중 조정</h3>
+    <p class="note2">대분류별 배점을 바꿔 순위를 다시 매겨 봅니다. 세부 항목은 같은 비율로 늘거나 줄고, 감점과 단계(①②③) 판정은 바뀌지 않습니다. 설정은 이 기기에만 저장됩니다.</p>
+    <div class="presets">${Object.keys(PRESETS).map((p) => `<button class="btn" data-preset="${p}">${p}</button>`).join("")}</div>
+    <div class="wgrid">${Object.keys(CATS).map((c) => `<label><span>${CATS[c]} <small>기본 ${b[c]}</small></span>
+      <input type="range" min="0" max="50" step="1" value="${cur[c]}" data-c="${c}" aria-label="${CATS[c]} 배점">
+      <input type="number" min="0" max="100" step="1" value="${cur[c]}" data-n="${c}" aria-label="${CATS[c]} 배점 숫자"></label>`).join("")}</div>
+    <p class="wsum">합계 <b id="wsum">${sum()}</b> / 100 <button class="btn" id="wfit">100으로 맞추기</button></p>
+    <div class="btns"><button class="btn pri" id="wapply">적용</button><button class="btn" id="wreset">기본으로</button></div>
+    ${S.custom ? `<p class="note2"><b>지금 내 비중이 적용돼 있습니다.</b> 목록·상세·엑셀 모두 이 비중으로 계산됩니다.</p>` : ""}`;
+  const sync = (c, v) => {
+    cur[c] = Math.max(0, Math.min(100, Math.round(+v || 0)));
+    el.querySelector(`[data-c="${c}"]`).value = Math.min(50, cur[c]);
+    el.querySelector(`[data-n="${c}"]`).value = cur[c];
+    const s = sum();
+    $("#wsum").textContent = s;
+    $("#wsum").className = s === 100 ? "" : "err";
+    $("#wapply").disabled = s !== 100;
+  };
+  el.querySelectorAll("input").forEach((i) => i.addEventListener("input", () => sync(i.dataset.c || i.dataset.n, i.value)));
+  el.querySelectorAll("[data-preset]").forEach((bt) => bt.addEventListener("click", () => {
+    const p = PRESETS[bt.dataset.preset] || b;
+    Object.keys(CATS).forEach((c) => sync(c, p[c]));
+  }));
+  $("#wfit").addEventListener("click", () => {
+    const s = sum();
+    if (!s) return;
+    const ks = Object.keys(CATS);
+    const v = Object.fromEntries(ks.map((c) => [c, Math.round(cur[c] * 100 / s)]));
+    const d = 100 - Object.values(v).reduce((x, y) => x + y, 0);
+    const big = ks.reduce((x, y) => (v[y] > v[x] ? y : x));
+    v[big] += d;
+    ks.forEach((c) => sync(c, v[c]));
+  });
+  $("#wapply").addEventListener("click", () => {
+    const same = Object.keys(CATS).every((c) => cur[c] === b[c]);
+    try { if (same) localStorage.removeItem(WKEY); else localStorage.setItem(WKEY, JSON.stringify(cur)); } catch (e) { /* 저장 불가 */ }
+    applyWeights(same ? null : cur);
+    refreshAll();
+    toast(same ? "기본 비중으로 계산합니다" : "내 비중으로 순위를 다시 매겼습니다");
+  });
+  $("#wreset").addEventListener("click", () => {
+    try { localStorage.removeItem(WKEY); } catch (e) { /* 저장 불가 */ }
+    applyWeights(null);
+    refreshAll();
+    toast("기본 비중으로 되돌렸습니다");
+  });
+  sync(Object.keys(CATS)[0], cur[Object.keys(CATS)[0]]);
+}
+
+function subText() {
+  const m = S.D.meta;
+  $("#sub").textContent = `코스피 시총 ${m.universe_cfg.top_n}위 중 ${m.scored}종목, ${m.asof} 종가 기준` +
+    (S.custom ? " · 내 점수 비중 적용 중" : "") + (m.errors.length ? ` · 수집 문제 ${m.errors.length}건` : "");
+}
+
+function refreshAll() {
+  subText();
+  renderLists();
+  renderRules();
+  renderWeights();
+}
+
 /* ---------- 엑셀 내려받기 ---------- */
 
 function loadXlsx() {
@@ -705,7 +808,7 @@ async function exportXlsx() {
     add(rows, "목록", [5, 14, 8, 12, 11, 9, 6, ...Object.keys(CATS).map(() => 9), 10, 8, 10, 8, 9, 9, 9, 9, 10, 9, 9, 8, 10, 4, 30, 30, 50]);
     add(detail, "세부 항목", [14, 8, 14, 22, 7, 5, 70]);
     add(ex, "제외 종목", [14, 8, 40]);
-    X.writeFile(wb, `바닥신호_${m.asof}.xlsx`);
+    X.writeFile(wb, `바닥신호_${m.asof}${S.custom ? "_내비중" : ""}.xlsx`);
     toast("엑셀 파일을 내려받았습니다");
   } catch (e) {
     toast(e.message || "내려받기에 실패했습니다");
@@ -728,11 +831,10 @@ async function load() {
   const m = S.D.meta;
   S.items = S.D.items;
   S.byCode = Object.fromEntries(S.items.map((i) => [i.code, i]));
-  S.max = m.weights;
-  S.catMax = catMax(m.weights);
-  $("#sub").textContent = `코스피 시총 ${m.universe_cfg.top_n}위 중 ${m.scored}종목, ${m.asof} 종가 기준` + (m.errors.length ? ` · 수집 문제 ${m.errors.length}건` : "");
-  renderLists();
-  renderRules();
+  let sw = savedWeights();
+  if (sw && Object.keys(CATS).some((c) => typeof sw[c] !== "number")) sw = null;
+  applyWeights(sw);
+  refreshAll();
   if (location.hash.length === 7 && S.byCode[location.hash.slice(1)]) openDetail(location.hash.slice(1));
 }
 
