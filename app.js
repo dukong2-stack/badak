@@ -175,7 +175,7 @@ function detailHtml(it) {
   return `<div class="d-top"><div><h2 id="d-name">${esc(it.name)} <button class="favbtn${isFav(it.code) ? " on" : ""}" id="favbtn" aria-pressed="${isFav(it.code)}">${isFav(it.code) ? "★ 관심" : "☆ 관심"}</button></h2><div class="cd">${it.code} · 코스피 시총 ${it.rank}위 · ${fmt(it.mcap / 10000, 1)}조</div>
       <div class="links"><a href="https://finance.naver.com/item/main.naver?code=${it.code}" target="_blank" rel="noopener">네이버 증권</a>
       <a href="https://dart.fss.or.kr/dsab001/main.do?textCrpNm=${encodeURIComponent(it.name)}" target="_blank" rel="noopener">DART 공시</a>
-      <a href="https://www.stocktong.co.kr/web/CorpInfo.aspx?tt=3&code=${it.code}" target="_blank" rel="noopener">증권통</a></div></div>
+      <a href="#" class="tong" data-name="${esc(it.name)}" data-code="${it.code}">증권통</a></div></div>
     <div class="d-score"><div class="sc">${fmt(it.score, 1)}</div><small>100점 중${it.pen.length ? `, 감점 전 ${fmt(it.raw, 1)}` : ""}</small></div></div>
     ${S.div && S.div.map[it.code] ? `<p class="stage-note"><b class="s2">배당가치 노트 후보 ${S.div.map[it.code].rank}위</b> (배당 점수 ${fmt(S.div.map[it.code].score, 1)}, 시가배당률 ${fmt(S.div.map[it.code].yld, 2)}%) <a href="../divnote/" target="_blank" rel="noopener">배당가치 노트 열기</a></p>` : ""}
     <div class="steps">${[1, 2, 3].map((s) => `<div class="k${s}${it.stage >= s ? " on" : ""}">${STAGE[s]}</div>`).join("")}</div>
@@ -623,6 +623,36 @@ const Heat = (() => {
   return { prep, signals };
 })();
 
+/* ---------- 증권통 앱 열기 ---------- */
+
+function copyText(t) {
+  // 버튼을 누른 순간 바로 복사(앱으로 넘어가기 전에 끝나야 함)
+  const ta = document.createElement("textarea");
+  ta.value = t; ta.setAttribute("readonly", ""); ta.style.position = "fixed"; ta.style.opacity = "0";
+  document.body.appendChild(ta); ta.select();
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+  ta.remove();
+  if (navigator.clipboard) navigator.clipboard.writeText(t).catch(() => {});
+  return ok || !!navigator.clipboard;
+}
+
+function openTong(name, code) {
+  copyText(name);
+  const ua = navigator.userAgent;
+  if (/android/i.test(ua)) {
+    toast(`'${name}' 복사됨 — 증권통 검색창에 붙여넣으세요`);
+    const store = encodeURIComponent("https://play.google.com/store/apps/details?id=semaphore.stockclient");
+    setTimeout(() => { location.href = `intent://#Intent;package=semaphore.stockclient;S.browser_fallback_url=${store};end`; }, 350);
+  } else if (/iphone|ipad|ipod/i.test(ua)) {
+    toast(`'${name}' 복사됨 — 증권통에서 붙여넣으세요`);
+    setTimeout(() => { location.href = "https://apps.apple.com/kr/app/id363974275"; }, 350);
+  } else {
+    toast(`'${name}' 복사됨 — PC에서는 증권통 웹으로 엽니다`);
+    window.open(`https://www.stocktong.co.kr/web/CorpInfo.aspx?tt=3&code=${code}`, "_blank", "noopener");
+  }
+}
+
 /* ---------- 엑셀 내려받기 ---------- */
 
 function loadXlsx() {
@@ -722,6 +752,8 @@ $("#xlsx").addEventListener("click", exportXlsx);
 $("#close").addEventListener("click", () => closeDetail());
 $("#divbtn").addEventListener("click", openOverlap);
 $("#detail").addEventListener("click", (e) => {
+  const tg = e.target.closest(".tong");
+  if (tg) { e.preventDefault(); openTong(tg.dataset.name, tg.dataset.code); return; }
   if (e.target.closest("#favbtn")) {
     const code = location.hash.slice(1), it = S.byCode[code];
     if (!it) return;
