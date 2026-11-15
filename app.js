@@ -693,29 +693,51 @@ function applyWeights(cw) {
 function renderWeights() {
   const cur = { ...S.catMax }, b = baseCats();
   const sum = () => Object.values(cur).reduce((x, y) => x + (+y || 0), 0);
-  const el = $("#wpanel");
+  let el = $("#wpanel");
+  if (!el) {  // 예전 화면 파일(index.html)이 남아 있어도 동작하도록
+    el = document.createElement("div"); el.id = "wpanel";
+    const r = $("#rules"); r.parentNode.insertBefore(el, r);
+  }
   el.innerHTML = `<h3>점수 비중 조정</h3>
-    <p class="note2">대분류별 배점을 바꿔 순위를 다시 매겨 봅니다. 세부 항목은 같은 비율로 늘거나 줄고, 감점과 단계(①②③) 판정은 바뀌지 않습니다. 설정은 이 기기에만 저장됩니다.</p>
+    <p class="note2">대분류별 배점을 바꾸면 <b>합계가 100일 때 바로</b> 모든 종목 점수와 순위가 다시 계산됩니다. 세부 항목은 같은 비율로 늘거나 줄고, 감점과 단계(①②③) 판정은 바뀌지 않습니다. 설정은 이 기기에만 저장됩니다.</p>
     <div class="presets">${Object.keys(PRESETS).map((p) => `<button class="btn" data-preset="${p}">${p}</button>`).join("")}</div>
     <div class="wgrid">${Object.keys(CATS).map((c) => `<label><span>${CATS[c]} <small>기본 ${b[c]}</small></span>
       <input type="range" min="0" max="50" step="1" value="${cur[c]}" data-c="${c}" aria-label="${CATS[c]} 배점">
-      <input type="number" min="0" max="100" step="1" value="${cur[c]}" data-n="${c}" aria-label="${CATS[c]} 배점 숫자"></label>`).join("")}</div>
+      <input type="number" inputmode="numeric" min="0" max="100" step="1" value="${cur[c]}" data-n="${c}" aria-label="${CATS[c]} 배점 숫자"></label>`).join("")}</div>
     <p class="wsum">합계 <b id="wsum">${sum()}</b> / 100 <button class="btn" id="wfit">100으로 맞추기</button></p>
-    <div class="btns"><button class="btn pri" id="wapply">적용</button><button class="btn" id="wreset">기본으로</button></div>
-    ${S.custom ? `<p class="note2"><b>지금 내 비중이 적용돼 있습니다.</b> 목록·상세·엑셀 모두 이 비중으로 계산됩니다.</p>` : ""}`;
-  const sync = (c, v) => {
+    <p class="wstate" id="wstate"></p>
+    <div class="btns"><button class="btn" id="wreset">기본 비중으로 되돌리기</button></div>`;
+  let timer = null;
+  const commit = () => {
+    const same = Object.keys(CATS).every((c) => cur[c] === b[c]);
+    try { if (same) localStorage.removeItem(WKEY); else localStorage.setItem(WKEY, JSON.stringify(cur)); } catch (e) { /* 저장 불가 */ }
+    applyWeights(same ? null : cur);
+    subText(); renderLists(); renderRules();
+    state();
+  };
+  const state = () => {
+    const s = sum(), st = $("#wstate");
+    if (s !== 100) { st.className = "wstate err"; st.textContent = `합계가 ${s}입니다. 100이 되면 바로 반영됩니다(‘100으로 맞추기’를 눌러도 됩니다).`; return; }
+    const top = [...S.items].sort((x, y) => y.score - x.score).slice(0, 3).map((i) => `${i.name} ${fmt(i.score, 1)}`).join(", ");
+    st.className = "wstate ok";
+    st.textContent = `${S.custom ? "내 비중" : "기본 비중"} 적용 중 — 현재 상위: ${top}`;
+  };
+  const sync = (c, v, go = true) => {
     cur[c] = Math.max(0, Math.min(100, Math.round(+v || 0)));
     el.querySelector(`[data-c="${c}"]`).value = Math.min(50, cur[c]);
     el.querySelector(`[data-n="${c}"]`).value = cur[c];
     const s = sum();
     $("#wsum").textContent = s;
     $("#wsum").className = s === 100 ? "" : "err";
-    $("#wapply").disabled = s !== 100;
+    clearTimeout(timer);
+    if (go && s === 100) timer = setTimeout(commit, 250); else state();
   };
   el.querySelectorAll("input").forEach((i) => i.addEventListener("input", () => sync(i.dataset.c || i.dataset.n, i.value)));
   el.querySelectorAll("[data-preset]").forEach((bt) => bt.addEventListener("click", () => {
     const p = PRESETS[bt.dataset.preset] || b;
-    Object.keys(CATS).forEach((c) => sync(c, p[c]));
+    Object.keys(CATS).forEach((c) => sync(c, p[c], false));
+    commit();
+    toast(`${bt.dataset.preset} 비중으로 다시 계산했습니다`);
   }));
   $("#wfit").addEventListener("click", () => {
     const s = sum();
@@ -725,22 +747,15 @@ function renderWeights() {
     const d = 100 - Object.values(v).reduce((x, y) => x + y, 0);
     const big = ks.reduce((x, y) => (v[y] > v[x] ? y : x));
     v[big] += d;
-    ks.forEach((c) => sync(c, v[c]));
-  });
-  $("#wapply").addEventListener("click", () => {
-    const same = Object.keys(CATS).every((c) => cur[c] === b[c]);
-    try { if (same) localStorage.removeItem(WKEY); else localStorage.setItem(WKEY, JSON.stringify(cur)); } catch (e) { /* 저장 불가 */ }
-    applyWeights(same ? null : cur);
-    refreshAll();
-    toast(same ? "기본 비중으로 계산합니다" : "내 비중으로 순위를 다시 매겼습니다");
+    ks.forEach((c) => sync(c, v[c], false));
+    commit();
   });
   $("#wreset").addEventListener("click", () => {
-    try { localStorage.removeItem(WKEY); } catch (e) { /* 저장 불가 */ }
-    applyWeights(null);
-    refreshAll();
+    Object.keys(CATS).forEach((c) => sync(c, b[c], false));
+    commit();
     toast("기본 비중으로 되돌렸습니다");
   });
-  sync(Object.keys(CATS)[0], cur[Object.keys(CATS)[0]]);
+  state();
 }
 
 function subText() {
