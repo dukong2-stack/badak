@@ -174,7 +174,8 @@ function detailHtml(it) {
     ${it.pen.map((p) => `<div class="sub-i"><span>${esc(p[0])}</span><span class="pt">${p[1]}</span><span class="nt">${esc(p[2])}</span></div>`).join("")}</section>` : "";
   return `<div class="d-top"><div><h2 id="d-name">${esc(it.name)} <button class="favbtn${isFav(it.code) ? " on" : ""}" id="favbtn" aria-pressed="${isFav(it.code)}">${isFav(it.code) ? "★ 관심" : "☆ 관심"}</button></h2><div class="cd">${it.code} · 코스피 시총 ${it.rank}위 · ${fmt(it.mcap / 10000, 1)}조</div>
       <div class="links"><a href="https://finance.naver.com/item/main.naver?code=${it.code}" target="_blank" rel="noopener">네이버 증권</a>
-      <a href="https://dart.fss.or.kr/dsab001/main.do?textCrpNm=${encodeURIComponent(it.name)}" target="_blank" rel="noopener">DART 공시</a></div></div>
+      <a href="https://dart.fss.or.kr/dsab001/main.do?textCrpNm=${encodeURIComponent(it.name)}" target="_blank" rel="noopener">DART 공시</a>
+      <a href="https://www.stocktong.co.kr/web/CorpInfo.aspx?tt=3&code=${it.code}" target="_blank" rel="noopener">증권통</a></div></div>
     <div class="d-score"><div class="sc">${fmt(it.score, 1)}</div><small>100점 중${it.pen.length ? `, 감점 전 ${fmt(it.raw, 1)}` : ""}</small></div></div>
     ${S.div && S.div.map[it.code] ? `<p class="stage-note"><b class="s2">배당가치 노트 후보 ${S.div.map[it.code].rank}위</b> (배당 점수 ${fmt(S.div.map[it.code].score, 1)}, 시가배당률 ${fmt(S.div.map[it.code].yld, 2)}%) <a href="../divnote/" target="_blank" rel="noopener">배당가치 노트 열기</a></p>` : ""}
     <div class="steps">${[1, 2, 3].map((s) => `<div class="k${s}${it.stage >= s ? " on" : ""}">${STAGE[s]}</div>`).join("")}</div>
