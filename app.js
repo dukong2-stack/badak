@@ -12,7 +12,8 @@ const CATS = {
 };
 const SHORT = { A: "소진", B: "과매도", C: "패턴", D: "수급", E: "가치", F: "내부자", G: "실적" };
 const STAGE = { 0: "해당 없음", 1: "① 과매도", 2: "② 바닥 형성", 3: "③ 전환 확인" };
-const TABS = ["3", "2", "1", "all", "fav", "rules"];
+const mktName = (it) => (it.mkt === "KOSDAQ" ? "코스닥" : "코스피");
+const TABS = ["3", "2", "1", "all", "vol", "fav", "rules"];
 const S = { tab: "3", D: null, items: [], byCode: {}, max: {}, catMax: {}, div: null, heat: null, ch: null, cur: null };
 
 /* ---------- 관심 종목(이 기기에 저장) ---------- */
@@ -42,6 +43,47 @@ function renderFav() {
   const n = $("#favnote");
   n.hidden = !nCh;
   n.textContent = `관심 종목 ${nCh}개 단계가 바뀌었습니다. 보기`;
+}
+
+/* ---------- 대량거래 ---------- */
+
+const VKEY = "badak.vol";
+function volCfg() {
+  let c = {};
+  try { c = JSON.parse(localStorage.getItem(VKEY)) || {}; } catch (e) { c = {}; }
+  return { mul: c.mul ?? 5, days: c.days ?? 10, down: c.down ?? true, neg: c.neg ?? false, ev: c.ev ?? false };
+}
+
+function renderVol() {
+  const c = volCfg();
+  $("#vmul").value = c.mul; $("#vdays").value = c.days; $("#vdown").checked = c.down; $("#vneg").checked = c.neg; $("#vev").checked = c.ev;
+  if (!S.all.length || !("vx" in S.all[0])) {
+    $("#nvol").textContent = "";
+    $("#lvol").innerHTML = `<li class="empty">대량거래 자료는 다음 수집부터 들어옵니다. GitHub Actions에서 Run workflow를 한 번 실행하세요.</li>`;
+    return;
+  }
+  const asof = S.D.meta.asof.replace(/-/g, "");
+  const dates = [...new Set(S.items.flatMap((i) => i.vx.map((v) => v[0])))].sort();
+  const recent = new Set(dates.filter((d) => d <= asof).slice(-c.days));
+  const hits = [];
+  for (const it of S.items) {
+    const xs = it.vx.filter((v) => recent.has(v[0]) && v[1] >= c.mul && (!c.down || v[3]) && (!c.neg || v[2] < 0) && (!c.ev || !v[4]));
+    if (xs.length) hits.push({ it, xs, last: xs[xs.length - 1], max: Math.max(...xs.map((v) => v[1])) });
+  }
+  hits.sort((a, b) => b.last[0].localeCompare(a.last[0]) || b.max - a.max);
+  $("#nvol").textContent = hits.length;
+  const dl = (d) => `${d.slice(4, 6)}/${d.slice(6)}`;
+  $("#lvol").innerHTML = hits.length ? hits.map(({ it, xs }) => card(it).replace(
+    '<div class="chips">',
+    `<div class="vline">${xs.slice(-3).reverse().map((v) => `<span><b>${dl(v[0])}</b> 거래량 ${v[1]}배, ${v[2] > 0 ? "+" : ""}${v[2]}%${v[4] ? ` <em>(${v[4]})</em>` : ""}</span>`).join("")}</div><div class="chips">`
+  )).join("") : `<li class="empty">조건에 맞는 종목이 없습니다. 배수를 낮추거나 기간을 늘려 보세요.</li>`;
+}
+
+function saveVol() {
+  const c = { mul: Math.max(1, +$("#vmul").value || 5), days: Math.max(1, Math.min(30, Math.round(+$("#vdays").value || 10))),
+    down: $("#vdown").checked, neg: $("#vneg").checked, ev: $("#vev").checked };
+  try { localStorage.setItem(VKEY, JSON.stringify(c)); } catch (e) { /* 저장 불가 */ }
+  renderVol();
 }
 
 /* ---------- 목록 ---------- */
@@ -91,10 +133,10 @@ function card(it) {
   const pen = it.pen.length ? `<div class="pen">감점 ${fmt(it.pen.reduce((a, p) => a + p[1], 0))} ${it.pen.map((p) => esc(p[0])).join(", ")}</div>` : "";
   const st = it.stage ? `<span class="since s${it.stage}">${sinceText(it, S.D.meta.asof)}</span>` : "";
   return `<li><button class="card" data-code="${it.code}" aria-label="${esc(it.name)} ${fmt(it.score, 1)}점 상세 보기">
-    <div class="row"><div>${isFav(it.code) ? `<span class="star" aria-label="관심 종목">★</span>` : ""}<span class="nm">${esc(it.name)}</span><span class="cd">${it.code}</span></div>
+    <div class="row"><div>${isFav(it.code) ? `<span class="star" aria-label="관심 종목">★</span>` : ""}<span class="nm">${esc(it.name)}</span><span class="cd">${it.code}${it.mkt === "KOSDAQ" ? " · 코스닥" : ""}</span></div>
       <div class="sc">${fmt(it.score, 1)}<small>/100</small></div></div>
     <div class="facts">${st}<span>${fmt(it.close)}원 <span class="${chg}">${it.chg > 0 ? "+" : ""}${fmt(it.chg, 2)}%</span></span>
-      <span>60일 저점 +${fmt(it.low60, 1)}%</span><span>시총 ${it.rank}위</span></div>
+      <span>60일 저점 +${fmt(it.low60, 1)}%</span><span>${mktName(it)} 시총 ${it.rank}위</span></div>
     ${sounding(it)}
     <div class="chips">${it.warn && it.warn.length ? `<span class="wn">주의 공시 ${it.warn.length}</span>` : ""}${changed(it) ? `<span class="chg">단계 ${stageMark(it.prev)} → ${stageMark(it.stage)}</span>` : ""}${divChip(it)}${topChips(it)}</div>${pen}
   </button></li>`;
@@ -111,6 +153,7 @@ function renderLists() {
   $$(".key-strip").forEach((k) => { k.innerHTML = key; k.title = "카드 막대는 왼쪽부터 이 순서, 폭은 배점 비중입니다"; });
   renderAll();
   renderFav();
+  renderVol();
 }
 
 function renderAll() {
@@ -172,7 +215,7 @@ function detailHtml(it) {
   }).join("");
   const pen = it.pen.length ? `<section class="cat penbox"><div class="cat-h"><span>감점</span><small>${fmt(it.pen.reduce((a, p) => a + p[1], 0))} (최대 ${S.D.meta.penalties.cap})</small></div>
     ${it.pen.map((p) => `<div class="sub-i"><span>${esc(p[0])}</span><span class="pt">${p[1]}</span><span class="nt">${esc(p[2])}</span></div>`).join("")}</section>` : "";
-  return `<div class="d-top"><div><h2 id="d-name">${esc(it.name)} <button class="favbtn${isFav(it.code) ? " on" : ""}" id="favbtn" aria-pressed="${isFav(it.code)}">${isFav(it.code) ? "★ 관심" : "☆ 관심"}</button></h2><div class="cd">${it.code} · 코스피 시총 ${it.rank}위 · ${fmt(it.mcap / 10000, 1)}조</div>
+  return `<div class="d-top"><div><h2 id="d-name">${esc(it.name)} <button class="favbtn${isFav(it.code) ? " on" : ""}" id="favbtn" aria-pressed="${isFav(it.code)}">${isFav(it.code) ? "★ 관심" : "☆ 관심"}</button></h2><div class="cd">${it.code} · ${mktName(it)} 시총 ${it.rank}위 · ${fmt(it.mcap / 10000, 1)}조</div>
       <div class="links"><a href="https://finance.naver.com/item/main.naver?code=${it.code}" target="_blank" rel="noopener">네이버 증권</a>
       <a href="https://dart.fss.or.kr/dsab001/main.do?textCrpNm=${encodeURIComponent(it.name)}" target="_blank" rel="noopener">DART 공시</a>
       <a href="#" class="tong" data-name="${esc(it.name)}" data-code="${it.code}">증권통</a></div></div>
@@ -278,7 +321,7 @@ function promptText(it) {
     `${it.name}(${it.code}) 매수 판단을 위해 추가 분석해 줘.`,
     ``,
     `[바닥 신호 앱 수치, ${m.asof} 종가 기준]`,
-    `현재가 ${fmt(it.close)}원, 시가총액 ${fmt(it.mcap / 10000, 1)}조 원(코스피 ${it.rank}위), 120일 고점 대비 ${fmt(it.hi120, 1)}%, 52주 고점 대비 ${fmt(it.hi52, 1)}%, 60일 저점 대비 +${fmt(it.low60, 1)}%${it.yr1 != null ? `, 1년 전 대비 ${it.yr1 > 0 ? "+" : ""}${fmt(it.yr1, 1)}%` : ""}`,
+    `현재가 ${fmt(it.close)}원, 시가총액 ${fmt(it.mcap / 10000, 1)}조 원(${mktName(it)} ${it.rank}위), 120일 고점 대비 ${fmt(it.hi120, 1)}%, 52주 고점 대비 ${fmt(it.hi52, 1)}%, 60일 저점 대비 +${fmt(it.low60, 1)}%${it.yr1 != null ? `, 1년 전 대비 ${it.yr1 > 0 ? "+" : ""}${fmt(it.yr1, 1)}%` : ""}`,
     it.nv && it.nv.per ? `네이버 기준 PER ${it.nv.per}배(최근 4개 분기)${it.nv.cns_per ? `, 추정 PER ${it.nv.cns_per}배` : ""}${it.nv.pbr ? `, PBR ${it.nv.pbr}배` : ""} — 앱의 가치 점수는 직전 사업연도 기준 5년 밴드` : null,
     it.sector ? `같은 업종(${it.sector.names.join(", ")} 등 ${it.sector.n}종목) 120일 고점 대비 중간값 ${fmt(it.sector.hi120, 1)}%` : null,
     it.op_yoy != null ? `최근 분기 영업이익 전년 대비 ${it.op_yoy > 0 ? "+" : ""}${fmt(it.op_yoy)}% (${it.subs.G1[1]})` : null,
@@ -413,7 +456,7 @@ function renderRules() {
   for (const e of m.excluded) (exByWhy[e.why.replace(/\(.*\)/, "").replace(/\d.*$/, "").trim()] ||= []).push(e);
   $("#rules").innerHTML = `
     <h3>후보군</h3>
-    <p>코스피 보통주 시가총액 상위 ${U.top_n}개(우선주·스팩·리츠 제외)에서 관리종목, 거래정지, 투자경고·위험, 1년 내 불성실공시법인 지정, 감사의견 비적정, 자본잠식, 최근 3년 중 영업흑자 ${U.min_profit_years_of_3}년 미만, 이자보상배율 ${U.min_interest_coverage}배 이하, 20일 평균 거래대금 ${U.min_trading_value_eok}억 미만을 뺍니다. 금융업은 흑자·이자보상 조건을 적용하지 않습니다.</p>
+    <p>코스피 보통주 시가총액 상위 ${U.top_n}개${U.top_n_kosdaq ? `와 코스닥 상위 ${U.top_n_kosdaq}개` : ""}(우선주·스팩·리츠 제외)에서 관리종목, 거래정지, 투자경고·위험, 1년 내 불성실공시법인 지정, 감사의견 비적정, 자본잠식, 최근 3년 중 영업흑자 ${U.min_profit_years_of_3}년 미만, 이자보상배율 ${U.min_interest_coverage}배 이하, 20일 평균 거래대금 ${U.min_trading_value_eok}억${U.top_n_kosdaq ? `(코스닥 ${U.min_trading_value_eok_kosdaq ?? U.min_trading_value_eok}억)` : ""} 미만을 뺍니다. 코스닥 종목의 상대강도와 급락일은 코스닥 지수와 비교합니다. 금융업은 흑자·이자보상 조건을 적용하지 않습니다.</p>
     <p>이번 기준일 ${m.universe}개 중 <b>${m.scored}개 채점</b>, ${m.excluded.length}개 제외.</p>
     <details><summary>제외된 종목 ${m.excluded.length}개</summary>
       ${Object.entries(exByWhy).map(([w, es]) => `<p><b>${esc(w)}</b> ${es.length}개: ${es.map((e) => `${esc(e.name)}${e.why !== w ? `(${esc(e.why.replace(w, "").replace(/[()]/g, "").trim())})` : ""}`).join(", ")}</p>`).join("")}
@@ -425,7 +468,7 @@ function renderRules() {
       <tr><td>횡령·배임·소송 공시(180일)</td><td class="r">${P.legal}</td></tr></tbody></table>
     <h3>점수 보정 규칙</h3>
     <ul>
-      <li>실적 발표 당일·다음날과 코스피 3% 이상 급락일의 대량거래는 매도 소진으로 보지 않습니다.</li>
+      <li>실적 발표 당일·다음날과 지수(코스피·코스닥 각각) 3% 이상 급락일의 대량거래는 매도 소진으로 보지 않습니다.</li>
       <li>다이버전스의 두 저점 사이에 실적 발표가 있으면 절반만 인정합니다.</li>
       <li>이중바닥·N자 돌파 후 다시 넥라인 아래로 내려오면 0점입니다.</li>
       <li>5일 순매수가 하루 평균 거래대금의 10%에 못 미치면 0점입니다.</li>
@@ -514,7 +557,7 @@ function openOverlap() {
     <ol class="list">${xs.length ? xs.map(card).join("") : `<li class="empty">겹치는 종목이 없습니다.</li>`}</ol>
     ${outside.length ? `<p class="ov-sec">겹치지 않는 배당 후보 ${outside.length}개</p>
       <p class="stage-note">${outside.map(([c, v]) => `${v.rank}위 ${esc(v.name)}${exc[c] ? ` <small>(${esc(exc[c])})</small>` : ""}`).join(", ")}</p>
-      <p class="stage-note">대부분 코스닥이거나 코스피 시총 ${S.D.meta.universe_cfg.top_n}위 밖이라 이 앱의 후보군에 들지 않은 종목입니다. 괄호 안은 이 앱에서 제외된 사유입니다.</p>` : ""}`;
+      <p class="stage-note">대부분 시총 순위 밖(코스피 ${S.D.meta.universe_cfg.top_n}위, 코스닥 ${S.D.meta.universe_cfg.top_n_kosdaq || 0}위)이거나 거래대금 기준 미달이라 이 앱의 후보군에 들지 않은 종목입니다. 괄호 안은 이 앱에서 제외된 사유입니다.</p>` : ""}`;
   $("#sheet").hidden = false;
   document.body.style.overflow = "hidden";
   history.pushState({ ov: 1 }, "", "#overlap");
@@ -673,7 +716,7 @@ function applyWeights(cw) {
   S.max = Object.fromEntries(Object.entries(W).map(([k, w]) => [k, Math.round(w * f[k[0]] * 10) / 10]));
   S.catMax = { ...cw };
   const cap = m.penalties.cap;
-  for (const it of S.items) {
+  for (const it of S.all) {
     if (!it._o) it._o = { subs: JSON.parse(JSON.stringify(it.subs)), score: it.score, cats: { ...it.cats } };
     const cats = {};
     for (const [k, s0] of Object.entries(it._o.subs)) {
@@ -760,8 +803,21 @@ function renderWeights() {
 
 function subText() {
   const m = S.D.meta;
-  $("#sub").textContent = `코스피 시총 ${m.universe_cfg.top_n}위 중 ${m.scored}종목, ${m.asof} 종가 기준` +
+  const U = m.universe_cfg, n = (k) => S.all.filter((i) => (i.mkt || "KOSPI") === k).length;
+  const scope = S.mkt === "KOSPI" ? `코스피 시총 ${U.top_n}위 중 ${n("KOSPI")}종목`
+    : S.mkt === "KOSDAQ" ? `코스닥 시총 ${U.top_n_kosdaq || 0}위 중 ${n("KOSDAQ")}종목`
+    : `코스피 ${n("KOSPI")} · 코스닥 ${n("KOSDAQ")}종목`;
+  $("#sub").textContent = `${scope}, ${m.asof} 종가 기준` +
     (S.custom ? " · 내 점수 비중 적용 중" : "") + (m.errors.length ? ` · 수집 문제 ${m.errors.length}건` : "");
+}
+
+function setMkt(mk, redraw = true) {
+  if (!["ALL", "KOSPI", "KOSDAQ"].includes(mk)) mk = "ALL";
+  S.mkt = mk;
+  S.items = mk === "ALL" ? S.all : S.all.filter((i) => (i.mkt || "KOSPI") === mk);
+  $$(".mkts button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mkt === mk)));
+  try { localStorage.setItem("badak.mkt", mk); } catch (e) { /* 저장 불가 */ }
+  if (redraw) { refreshAll(); if (S.div) showDiv(); }
 }
 
 function refreshAll() {
@@ -797,7 +853,7 @@ async function exportXlsx() {
       "단계 진입일": it.stage ? `${it.since.slice(0, 4)}-${it.since.slice(4, 6)}-${it.since.slice(6)}` : "",
       "바닥 점수": it.score, "감점": it.pen.reduce((a, p) => a + p[1], 0) || 0,
       ...Object.fromEntries(Object.keys(CATS).map((c) => [`${CATS[c]}(${S.catMax[c]})`, it.cats[c] || 0])),
-      "종가": it.close, "등락률(%)": it.chg, "시가총액(억)": it.mcap, "코스피 시총순위": it.rank,
+      "종가": it.close, "등락률(%)": it.chg, "시가총액(억)": it.mcap, "시장": mktName(it), "시장 내 시총순위": it.rank,
       "60일 저점 대비(%)": it.low60, "120일 고점 대비(%)": it.hi120, "52주 고점 대비(%)": it.hi52 ?? "",
       "1년 전 대비(%)": it.yr1 ?? "", "최근 분기 영업이익 전년비(%)": it.op_yoy ?? "",
       "PER 최근4분기(네이버)": it.nv?.per ?? "", "추정 PER(네이버)": it.nv?.cns_per ?? "", "PBR(네이버)": it.nv?.pbr ?? "",
@@ -823,7 +879,7 @@ async function exportXlsx() {
     add(rows, "목록", [5, 14, 8, 12, 11, 9, 6, ...Object.keys(CATS).map(() => 9), 10, 8, 10, 8, 9, 9, 9, 9, 10, 9, 9, 8, 10, 4, 30, 30, 50]);
     add(detail, "세부 항목", [14, 8, 14, 22, 7, 5, 70]);
     add(ex, "제외 종목", [14, 8, 40]);
-    X.writeFile(wb, `바닥신호_${m.asof}${S.custom ? "_내비중" : ""}.xlsx`);
+    X.writeFile(wb, `바닥신호_${m.asof}${S.mkt !== "ALL" ? "_" + (S.mkt === "KOSPI" ? "코스피" : "코스닥") : ""}${S.custom ? "_내비중" : ""}.xlsx`);
     toast("엑셀 파일을 내려받았습니다");
   } catch (e) {
     toast(e.message || "내려받기에 실패했습니다");
@@ -844,8 +900,11 @@ async function load() {
     return;
   }
   const m = S.D.meta;
-  S.items = S.D.items;
-  S.byCode = Object.fromEntries(S.items.map((i) => [i.code, i]));
+  S.all = S.D.items;
+  S.byCode = Object.fromEntries(S.all.map((i) => [i.code, i]));
+  let mk = "ALL";
+  try { mk = localStorage.getItem("badak.mkt") || "ALL"; } catch (e) { /* 저장 불가 */ }
+  setMkt(mk, false);
   let sw = savedWeights();
   if (sw && Object.keys(CATS).some((c) => typeof sw[c] !== "number")) sw = null;
   applyWeights(sw);
@@ -853,12 +912,15 @@ async function load() {
   if (location.hash.length === 7 && S.byCode[location.hash.slice(1)]) openDetail(location.hash.slice(1));
 }
 
+$(".mkts").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b && S.D) setMkt(b.dataset.mkt); });
 $(".tabs").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) setTab(b.dataset.tab); });
 $("#main").addEventListener("click", (e) => {
   const c = e.target.closest(".card"); if (c) return openDetail(c.dataset.code);
   const g = e.target.closest("[data-go]"); if (g) setTab(g.dataset.go);
 });
 $("#q").addEventListener("input", renderAll);
+["#vmul", "#vdays", "#vdown", "#vneg", "#vev"].forEach((s) => $(s).addEventListener("change", saveVol));
+["#vmul", "#vdays"].forEach((s) => $(s).addEventListener("input", () => { if ($(s).value !== "") saveVol(); }));
 $("#favnote").addEventListener("click", () => setTab("fav"));
 $("#main").addEventListener("click", (e) => {
   const u = e.target.closest("[data-unfav]");

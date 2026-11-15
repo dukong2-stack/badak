@@ -22,12 +22,16 @@
       </div>
     </div>
     <p id="sub" class="sub">불러오는 중…</p>
+    <div class="mkts" role="group" aria-label="시장">
+      <button data-mkt="ALL">전체</button><button data-mkt="KOSPI">코스피</button><button data-mkt="KOSDAQ">코스닥</button>
+    </div>
     <button id="favnote" class="favnote" hidden></button>
     <nav class="tabs" role="tablist" aria-label="단계">
       <button role="tab" data-tab="3"><b class="st s3">③</b>전환<span class="n" id="n3"></span></button>
       <button role="tab" data-tab="2"><b class="st s2">②</b>바닥<span class="n" id="n2"></span></button>
       <button role="tab" data-tab="1"><b class="st s1">①</b>과매도<span class="n" id="n1"></span></button>
       <button role="tab" data-tab="all">전체</button>
+      <button role="tab" data-tab="vol">대량거래<span class="n" id="nvol"></span></button>
       <button role="tab" data-tab="fav">★ 관심<span class="n" id="nfav"></span></button>
       <button role="tab" data-tab="rules">기준</button>
     </nav>
@@ -48,6 +52,17 @@
         <button id="xlsx" class="btn">엑셀</button>
       </div>
       <div class="key-strip"></div><ol class="list" id="lall"></ol>
+    </section>
+    <section class="pane" data-pane="vol">
+      <p class="lead">하락 추세(60일선 아래이거나 20일 동안 8% 넘게 하락) 중에 거래량이 한 달(20거래일) 평균보다 크게 터진 종목입니다. 조건은 직접 바꿀 수 있고 이 기기에 저장됩니다.</p>
+      <div class="vtools">
+        <label>거래량 <input type="number" id="vmul" min="2" max="20" step="0.5" inputmode="decimal"> 배 이상</label>
+        <label>최근 <input type="number" id="vdays" min="1" max="30" step="1" inputmode="numeric"> 거래일</label>
+        <label class="chk"><input type="checkbox" id="vdown"> 하락 추세만</label>
+        <label class="chk"><input type="checkbox" id="vneg"> 그날 주가가 내린 경우만</label>
+        <label class="chk"><input type="checkbox" id="vev"> 실적 발표·시장 급락일 제외</label>
+      </div>
+      <ol class="list" id="lvol"></ol>
     </section>
     <section class="pane" data-pane="fav"><p class="lead">상세 화면의 ☆를 눌러 담은 종목입니다. 지난 수집보다 단계가 바뀐 종목이 맨 위에 옵니다. 이 기기에만 저장됩니다.</p><ol class="list" id="lfav"></ol></section>
     <section class="pane rules" data-pane="rules"><div id="wpanel"></div><div id="rules"></div></section>
